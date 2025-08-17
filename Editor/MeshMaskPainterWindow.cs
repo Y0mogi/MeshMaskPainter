@@ -1,5 +1,6 @@
 // MeshMaskPainterWindow.cs
 using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -147,13 +148,13 @@ public class MeshMaskPainterWindow : EditorWindow
 
             EditorGUILayout.Space();
 
-            m_PaintDisplayFoldout = EditorGUILayout.Foldout(m_PaintDisplayFoldout, "ペイント & 表示設定", true, EditorStyles.foldoutHeader);
-            if (m_PaintDisplayFoldout) DrawPaintAndDisplaySettings();
+            m_SelectionToolsFoldout = EditorGUILayout.Foldout(m_SelectionToolsFoldout, "選択ツール", true, EditorStyles.foldoutHeader);
+            if (m_SelectionToolsFoldout) DrawSelectionTools();
 
             EditorGUILayout.Space();
 
-            m_SelectionToolsFoldout = EditorGUILayout.Foldout(m_SelectionToolsFoldout, "選択ツール", true, EditorStyles.foldoutHeader);
-            if (m_SelectionToolsFoldout) DrawSelectionTools();
+            m_PaintDisplayFoldout = EditorGUILayout.Foldout(m_PaintDisplayFoldout, "ペイント & 表示設定", true, EditorStyles.foldoutHeader);
+            if (m_PaintDisplayFoldout) DrawPaintAndDisplaySettings();
 
             EditorGUILayout.Space();
 
@@ -231,8 +232,10 @@ public class MeshMaskPainterWindow : EditorWindow
 
             EditorGUILayout.Space(4);
             EditorGUILayout.LabelField("表示設定", EditorStyles.miniBoldLabel);
-            m_Core.EdgeHighlightWidth = EditorGUILayout.Slider("エッジの太さ (px)", m_Core.EdgeHighlightWidth, 0.5f, 6f);
-            m_Core.ShowWireframe = EditorGUILayout.ToggleLeft("選択ワイヤーフレームを表示", m_Core.ShowWireframe);
+            //m_Core.EdgeHighlightWidth = EditorGUILayout.Slider("エッジの太さ (px)", m_Core.EdgeHighlightWidth, 0.5f, 6f);
+            m_Core.EdgeSelectionColor = EditorGUILayout.ColorField("選択済み箇所の色", m_Core.EdgeSelectionColor);
+            m_Core.EdgeHighlightColor = EditorGUILayout.ColorField("選択中のハイライト色", m_Core.EdgeHighlightColor);
+            m_Core.ShowWireframe = EditorGUILayout.ToggleLeft("選択済み箇所をワイヤーフレームを表示", m_Core.ShowWireframe);
             m_Core.HoverHighlight = EditorGUILayout.ToggleLeft("ホバー時にハイライト", m_Core.HoverHighlight);
             bool newShowBaseTexture = EditorGUILayout.ToggleLeft("プレビューにベーステクスチャを表示", m_Core.ShowBaseTextureInPreview);
             if (newShowBaseTexture != m_Core.ShowBaseTextureInPreview) { m_Core.ShowBaseTextureInPreview = newShowBaseTexture; m_Core.UpdatePreviewTexture(m_SharpPreviewTex); }
@@ -426,29 +429,43 @@ public class MeshMaskPainterWindow : EditorWindow
             var verts = m_Core.Mesh.vertices;
             var tris = m_Core.Mesh.triangles;
 
-            Handles.color = new Color(1, 0, 0, 0.85f);
+            List<Vector3> linePoints = new List<Vector3>(m_Core.SelectedTriangles.Count * 6);
+
             foreach (var triIdx in m_Core.SelectedTriangles)
             {
                 if (!m_Core.IsTriangleInActiveScope(triIdx)) continue;
 
-                int i0 = tris[triIdx * 3 + 0], i1 = tris[triIdx * 3 + 1], i2 = tris[triIdx * 3 + 2];
-                DrawLineAA(verts[i0], verts[i1], m_Core.EdgeHighlightWidth);
-                DrawLineAA(verts[i1], verts[i2], m_Core.EdgeHighlightWidth);
-                DrawLineAA(verts[i2], verts[i0], m_Core.EdgeHighlightWidth);
+                int i0 = tris[triIdx * 3 + 0];
+                int i1 = tris[triIdx * 3 + 1];
+                int i2 = tris[triIdx * 3 + 2];
+
+                linePoints.Add(verts[i0]); linePoints.Add(verts[i1]);
+                linePoints.Add(verts[i1]); linePoints.Add(verts[i2]);
+                linePoints.Add(verts[i2]); linePoints.Add(verts[i0]);
+            }
+
+            if (linePoints.Count > 0)
+            {
+                Handles.color = m_Core.EdgeSelectionColor;
+                Handles.DrawLines(linePoints.ToArray());
             }
 
             if (m_Core.HoverHighlight && m_HoverTriangle >= 0)
             {
-                Handles.color = new Color(1, 1, 0, 0.95f);
-                int i0 = tris[m_HoverTriangle * 3 + 0], i1 = tris[m_HoverTriangle * 3 + 1], i2 = tris[m_HoverTriangle * 3 + 2];
+                Handles.color = m_Core.EdgeHighlightColor;
+                int i0 = tris[m_HoverTriangle * 3 + 0];
+                int i1 = tris[m_HoverTriangle * 3 + 1];
+                int i2 = tris[m_HoverTriangle * 3 + 2];
                 float hoverWidth = Mathf.Max(m_Core.EdgeHighlightWidth + 0.5f, 1f);
                 DrawLineAA(verts[i0], verts[i1], hoverWidth);
                 DrawLineAA(verts[i1], verts[i2], hoverWidth);
                 DrawLineAA(verts[i2], verts[i0], hoverWidth);
             }
+
             Handles.zTest = UnityEngine.Rendering.CompareFunction.LessEqual;
             Handles.color = Color.white;
         }
+
     }
 
     /// <summary>
