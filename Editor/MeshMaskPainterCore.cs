@@ -25,7 +25,6 @@ public class MeshMaskPainterCore
     public bool PaintMode = true;
     public bool OnlyActiveSubmesh = false;
     public int ActiveSubmesh = -1;
-    public float EdgeHighlightWidth = 1.5f;
     public Color EdgeHighlightColor = Color.red;
     public Color EdgeSelectionColor = Color.blue;
     public bool HoverHighlight = true;
@@ -48,6 +47,7 @@ public class MeshMaskPainterCore
     public TargetChannel TargetTextureChannel = TargetChannel.A;
     public TargetChannel TargetVertexColorChannel = TargetChannel.A;
 
+    public bool IsolateEnabled = false;
 
     [SerializeField]
     public List<int> SelectedTriangles = new List<int>();
@@ -60,6 +60,8 @@ public class MeshMaskPainterCore
     private int[] m_TriangleToSubmesh;
     private Dictionary<int, List<int>> m_AdjacencyMap;
     private Dictionary<int, List<int>> m_UvAdjacencyMap;
+    private Dictionary<Vector2Int, List<int>> m_UvTriangleGrid;
+    private const int UV_GRID_SIZE = 32;
 
     public event Action UndoRedoPerformed;
 
@@ -113,6 +115,7 @@ public class MeshMaskPainterCore
             m_TriangleToSubmesh = null;
             m_AdjacencyMap = null;
             m_UvAdjacencyMap = null;
+            m_UvTriangleGrid = null;
             return;
         }
 
@@ -123,6 +126,7 @@ public class MeshMaskPainterCore
             m_TriangleToSubmesh = null;
             m_AdjacencyMap = null;
             m_UvAdjacencyMap = null;
+            m_UvTriangleGrid = null;
             return;
         }
 
@@ -152,8 +156,8 @@ public class MeshMaskPainterCore
         m_TriangleToSubmesh = MeshAnalysis.BuildTriangleToSubmeshMap(Mesh);
         m_AdjacencyMap = MeshAnalysis.BuildAdjacencyMap(Mesh);
         m_UvAdjacencyMap = MeshAnalysis.BuildUVAdjacencyMap(Mesh);
+        m_UvTriangleGrid = MeshAnalysis.BuildUVTriangleGrid(Mesh, UV_GRID_SIZE);
         EnsureTemporaryCollider();
-
     }
 
     /// <summary>
@@ -171,7 +175,7 @@ public class MeshMaskPainterCore
     /// <param name="triIdx">追加するポリゴンのインデックス。</param>
     public void AddTriangle(int triIdx)
     {
-        if (!SelectedTriangles.Contains(triIdx))
+        if (IsTriangleInActiveScope(triIdx) && !SelectedTriangles.Contains(triIdx))
         {
             SelectedTriangles.Add(triIdx);
             UndoRedoPerformed?.Invoke();
@@ -250,7 +254,7 @@ public class MeshMaskPainterCore
             {
                 foreach (var neighbor in neighbors)
                 {
-                    if (!currentSelection.Contains(neighbor)) newAdditions.Add(neighbor);
+                    if (!currentSelection.Contains(neighbor) && IsTriangleInActiveScope(neighbor)) newAdditions.Add(neighbor);
                 }
             }
         }
@@ -285,16 +289,17 @@ public class MeshMaskPainterCore
     }
 
     /// <summary>
-    /// 指定された開始ポリゴンから繋がっているUVアイランド全体を選択します。
+    /// 指定された開始ポリゴンから繋がっているUVアイランド全体の選択状態を切り替えます。
     /// </summary>
     /// <param name="startTriangle">探索を開始するポリゴンのインデックス。</param>
-    public void SelectUVIsland(int startTriangle)
+    public void ToggleUVIslandSelection(int startTriangle)
     {
         if (m_UvAdjacencyMap == null || !m_UvAdjacencyMap.ContainsKey(startTriangle)) return;
 
+        var islandTriangles = new HashSet<int>();
         var q = new Queue<int>();
         q.Enqueue(startTriangle);
-        var island = new HashSet<int> { startTriangle };
+        islandTriangles.Add(startTriangle);
 
         while (q.Count > 0)
         {
@@ -303,22 +308,43 @@ public class MeshMaskPainterCore
             {
                 foreach (var neighbor in neighbors)
                 {
-                    if (island.Add(neighbor)) q.Enqueue(neighbor);
+                    if (islandTriangles.Add(neighbor))
+                    {
+                        q.Enqueue(neighbor);
+                    }
                 }
             }
         }
 
         var currentSelection = new HashSet<int>(SelectedTriangles);
-        int addedCount = 0;
-        foreach (var tri in island)
+        bool isAnyPartOfIslandSelected = islandTriangles.Overlaps(currentSelection);
+        bool changed = false;
+
+        if (isAnyPartOfIslandSelected)
         {
-            if (currentSelection.Add(tri))
+            int originalCount = SelectedTriangles.Count;
+            SelectedTriangles.RemoveAll(islandTriangles.Contains);
+            if (SelectedTriangles.Count != originalCount)
             {
-                SelectedTriangles.Add(tri);
-                addedCount++;
+                changed = true;
             }
         }
-        if (addedCount > 0) UndoRedoPerformed?.Invoke();
+        else
+        {
+            foreach (var triIdx in islandTriangles)
+            {
+                if (IsTriangleInActiveScope(triIdx) && !currentSelection.Contains(triIdx))
+                {
+                    SelectedTriangles.Add(triIdx);
+                    changed = true;
+                }
+            }
+        }
+
+        if (changed)
+        {
+            UndoRedoPerformed?.Invoke();
+        }
     }
 
     /// <summary>
@@ -389,10 +415,8 @@ public class MeshMaskPainterCore
         foreach (var triIdx in SelectedTriangles)
         {
             if (triIdx < 0 || triIdx * 3 + 2 >= tris.Length) continue;
-            if (OnlyActiveSubmesh && ActiveSubmesh >= 0 && m_TriangleToSubmesh != null)
-            {
-                if (triIdx >= m_TriangleToSubmesh.Length || m_TriangleToSubmesh[triIdx] != ActiveSubmesh) continue;
-            }
+            if (!IsTriangleInActiveScope(triIdx)) continue;
+
             int i0 = tris[triIdx * 3 + 0], i1 = tris[triIdx * 3 + 1], i2 = tris[triIdx * 3 + 2];
             Vector2 uv0 = new Vector2(uvs[i0].x * width, uvs[i0].y * height);
             Vector2 uv1 = new Vector2(uvs[i1].x * width, uvs[i1].y * height);
@@ -457,7 +481,6 @@ public class MeshMaskPainterCore
             string subLabel = target < 0 ? "All" : $"S{target}";
             string defaultFileName = $"{safeName}_Mask_{subLabel}{(EnableBlur ? "_Blurred" : "")}.png";
             string initialDir = Path.GetFullPath(ExportFolder);
-
             string path = EditorUtility.SaveFilePanel("マスク画像を保存", initialDir, defaultFileName, "png");
 
             if (!string.IsNullOrEmpty(path))
@@ -561,9 +584,7 @@ public class MeshMaskPainterCore
         AssetDatabase.SaveAssets();
 
         Smr.sharedMesh = newMesh;
-
         SetupMeshAndMappings();
-
         EditorUtility.DisplayDialog("成功", $"頂点カラーをベイクし、新しいメッシュアセットを保存しました:\n{newPath}", "OK");
     }
 
@@ -591,13 +612,7 @@ public class MeshMaskPainterCore
             return;
         }
 
-        RenderTexture tmpRT = RenderTexture.GetTemporary(
-            TargetTextureForWrite.width,
-            TargetTextureForWrite.height,
-            0,
-            RenderTextureFormat.Default,
-            RenderTextureReadWrite.Linear);
-
+        RenderTexture tmpRT = RenderTexture.GetTemporary(TargetTextureForWrite.width, TargetTextureForWrite.height, 0, RenderTextureFormat.Default, RenderTextureReadWrite.Linear);
         Graphics.Blit(TargetTextureForWrite, tmpRT);
         RenderTexture previous = RenderTexture.active;
         RenderTexture.active = tmpRT;
@@ -673,6 +688,79 @@ public class MeshMaskPainterCore
     }
 
     /// <summary>
+    /// UV座標から対応するポリゴンを見つけます。
+    /// </summary>
+    /// <param name="uv">検索するUV座標 (0-1)。</param>
+    /// <returns>見つかったポリゴンのインデックス。見つからない場合は-1。</returns>
+    public int FindTriangleFromUV(Vector2 uv)
+    {
+        if (Mesh == null) return -1;
+        return MeshAnalysis.FindTriangleFromUV(Mesh, uv, m_UvTriangleGrid, UV_GRID_SIZE);
+    }
+
+    /// <summary>
+    /// 選択範囲のみで構成される新しいメッシュを生成します。
+    /// </summary>
+    /// <returns>生成された分離メッシュ。</returns>
+    public Mesh CreateIsolatedMesh()
+    {
+        if (Mesh == null || SelectedTriangles.Count == 0) return null;
+
+        var newMesh = new Mesh();
+        var currentVerts = Mesh.vertices;
+        var currentNormals = Mesh.normals;
+        var currentTangents = Mesh.tangents;
+        var currentUVs = Mesh.uv;
+        var currentColors = Mesh.colors;
+        var originalTris = Mesh.triangles;
+
+        var newVerts = new List<Vector3>();
+        var newNormals = new List<Vector3>();
+        var newTangents = new List<Vector4>();
+        var newUVs = new List<Vector2>();
+        var newColors = new List<Color>();
+        var newTris = new List<int>();
+
+        var vertMap = new Dictionary<int, int>();
+        int newVertIdx = 0;
+
+        foreach (var triIdx in SelectedTriangles)
+        {
+            if (!IsTriangleInActiveScope(triIdx)) continue;
+
+            for (int i = 0; i < 3; i++)
+            {
+                int originalVertIdx = originalTris[triIdx * 3 + i];
+                if (vertMap.TryGetValue(originalVertIdx, out int mappedIdx))
+                {
+                    newTris.Add(mappedIdx);
+                }
+                else
+                {
+                    newVerts.Add(currentVerts[originalVertIdx]);
+                    if (currentNormals.Length > originalVertIdx) newNormals.Add(currentNormals[originalVertIdx]);
+                    if (currentTangents.Length > originalVertIdx) newTangents.Add(currentTangents[originalVertIdx]);
+                    if (currentUVs.Length > originalVertIdx) newUVs.Add(currentUVs[originalVertIdx]);
+                    if (currentColors.Length > originalVertIdx) newColors.Add(currentColors[originalVertIdx]);
+
+                    vertMap[originalVertIdx] = newVertIdx;
+                    newTris.Add(newVertIdx);
+                    newVertIdx++;
+                }
+            }
+        }
+
+        newMesh.vertices = newVerts.ToArray();
+        newMesh.triangles = newTris.ToArray();
+        if (newNormals.Count == newVerts.Count) newMesh.normals = newNormals.ToArray(); else newMesh.RecalculateNormals();
+        if (newTangents.Count == newVerts.Count) newMesh.tangents = newTangents.ToArray(); else newMesh.RecalculateTangents();
+        if (newUVs.Count == newVerts.Count) newMesh.uv = newUVs.ToArray();
+        if (newColors.Count == newVerts.Count) newMesh.colors = newColors.ToArray();
+
+        return newMesh;
+    }
+
+    /// <summary>
     /// レイキャストのために一時的なMeshColliderを付与します。
     /// </summary>
     private void EnsureTemporaryCollider()
@@ -704,7 +792,7 @@ public class MeshMaskPainterCore
     }
 
     /// <summary>
-    /// 作成したベイク用の一時Meshがあれば破棄する（メモリリーク防止）。
+    /// 作成したベイク用の一時Meshがあれば破棄します（メモリリーク防止）。
     /// </summary>
     private void RemoveBakedMeshIfAny()
     {

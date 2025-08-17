@@ -207,6 +207,109 @@ public static class MeshAnalysis
     }
 
     /// <summary>
+    /// UV座標から対応するポリゴンを見つけます（グリッド使用版）。
+    /// </summary>
+    /// <param name="mesh">検索対象のメッシュ。</param>
+    /// <param name="uv">UV座標 (0-1)。</param>
+    /// <param name="grid">事前に計算されたUVグリッド。</param>
+    /// <param name="gridSize">グリッドのサイズ。</param>
+    /// <returns>見つかったポリゴンのインデックス。見つからない場合は-1。</returns>
+    public static int FindTriangleFromUV(Mesh mesh, Vector2 uv, Dictionary<Vector2Int, List<int>> grid, int gridSize)
+    {
+        if (mesh == null || mesh.uv.Length == 0 || grid == null) return -1;
+
+        var cell = new Vector2Int(Mathf.FloorToInt(uv.x * gridSize), Mathf.FloorToInt(uv.y * gridSize));
+        if (grid.TryGetValue(cell, out var candidateTriangles))
+        {
+            var tris = mesh.triangles;
+            var uvs = mesh.uv;
+
+            foreach (var triIdx in candidateTriangles)
+            {
+                Vector2 uv0 = uvs[tris[triIdx * 3 + 0]];
+                Vector2 uv1 = uvs[tris[triIdx * 3 + 1]];
+                Vector2 uv2 = uvs[tris[triIdx * 3 + 2]];
+
+                if (IsPointInTriangle(uv, uv0, uv1, uv2))
+                {
+                    return triIdx;
+                }
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// UVポリゴンを高速検索するためのグリッドを構築します。
+    /// </summary>
+    /// <param name="mesh">解析対象のメッシュ。</param>
+    /// <param name="gridSize">グリッドの分割数。</param>
+    /// <returns>UV座標をキーとするポリゴンインデックスのリストを持つ辞書。</returns>
+    public static Dictionary<Vector2Int, List<int>> BuildUVTriangleGrid(Mesh mesh, int gridSize)
+    {
+        var grid = new Dictionary<Vector2Int, List<int>>();
+        if (mesh == null || mesh.uv.Length == 0) return grid;
+
+        var tris = mesh.triangles;
+        var uvs = mesh.uv;
+        int triCount = tris.Length / 3;
+
+        for (int i = 0; i < triCount; i++)
+        {
+            Vector2 uv0 = uvs[tris[i * 3 + 0]];
+            Vector2 uv1 = uvs[tris[i * 3 + 1]];
+            Vector2 uv2 = uvs[tris[i * 3 + 2]];
+
+            float minX = Mathf.Min(uv0.x, uv1.x, uv2.x);
+            float maxX = Mathf.Max(uv0.x, uv1.x, uv2.x);
+            float minY = Mathf.Min(uv0.y, uv1.y, uv2.y);
+            float maxY = Mathf.Max(uv0.y, uv1.y, uv2.y);
+
+            int startX = Mathf.FloorToInt(minX * gridSize);
+            int endX = Mathf.FloorToInt(maxX * gridSize);
+            int startY = Mathf.FloorToInt(minY * gridSize);
+            int endY = Mathf.FloorToInt(maxY * gridSize);
+
+            for (int y = startY; y <= endY; y++)
+            {
+                for (int x = startX; x <= endX; x++)
+                {
+                    var cell = new Vector2Int(x, y);
+                    if (!grid.ContainsKey(cell))
+                    {
+                        grid[cell] = new List<int>();
+                    }
+                    grid[cell].Add(i);
+                }
+            }
+        }
+        return grid;
+    }
+
+    /// <summary>
+    /// 指定した点が三角形の内部にあるかどうかを判定します（重心座標系）。
+    /// </summary>
+    private static bool IsPointInTriangle(Vector2 p, Vector2 p0, Vector2 p1, Vector2 p2)
+    {
+        var s = p0.y * p2.x - p0.x * p2.y + (p2.y - p0.y) * p.x + (p0.x - p2.x) * p.y;
+        var t = p0.x * p1.y - p0.y * p1.x + (p0.y - p1.y) * p.x + (p1.x - p0.x) * p.y;
+
+        if ((s < 0) != (t < 0) && s != 0 && t != 0)
+        {
+            return false;
+        }
+
+        var A = -p1.y * p2.x + p0.y * (p2.x - p1.x) + p0.x * (p1.y - p2.y) + p1.x * p2.y;
+        if (A < 0)
+        {
+            s = -s;
+            t = -t;
+            A = -A;
+        }
+        return s > 0 && t > 0 && (s + t) <= A;
+    }
+
+    /// <summary>
     /// 2つの頂点インデックスから、順序に依存しない一意のlong型のキーを生成します。
     /// </summary>
     private static long GetEdgeKey(int vA, int vB) => vA < vB ? ((long)vA << 32) | (uint)vB : ((long)vB << 32) | (uint)vA;
