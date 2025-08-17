@@ -518,6 +518,12 @@ public class MeshMaskPainterCore
             m_TempCollider.sharedMesh = Mesh;
             m_TempCollider.convex = false;
         }
+        else if (col == m_TempCollider)
+        {
+            // 既に自身で追加したColliderが存在する場合、
+            // Bakeし直した新しいメッシュをセットし直す
+            m_TempCollider.sharedMesh = Mesh;
+        }
     }
 
     /// <summary>
