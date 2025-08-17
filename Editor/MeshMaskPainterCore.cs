@@ -37,6 +37,8 @@ public class MeshMaskPainterCore
     public List<int> SelectedTriangles = new List<int>();
 
     public Mesh Mesh { get; private set; }
+    private Mesh m_BakedMesh;
+
     private MeshCollider m_TempCollider;
 
     private int[] m_TriangleToSubmesh;
@@ -76,6 +78,9 @@ public class MeshMaskPainterCore
     /// <param name="newSmr">新しいターゲット。</param>
     public void SetTarget(SkinnedMeshRenderer newSmr)
     {
+        // 以前に作った一時ベイクメッシュがあれば破棄
+        RemoveBakedMeshIfAny();
+
         Smr = newSmr;
         SetupMeshAndMappings();
     }
@@ -85,12 +90,62 @@ public class MeshMaskPainterCore
     /// </summary>
     public void SetupMeshAndMappings()
     {
-        Mesh = Smr != null ? Smr.sharedMesh : null;
+        // 前回のベイクメッシュをクリア（既に SetTarget でも呼ぶが二重保険）
+        RemoveBakedMeshIfAny();
+
+        if (Smr == null)
+        {
+            Mesh = null;
+            SelectedTriangles.Clear();
+            m_TriangleToSubmesh = null;
+            m_AdjacencyMap = null;
+            m_UvAdjacencyMap = null;
+            return;
+        }
+
+        // sharedMesh が無い場合は処理しない
+        if (Smr.sharedMesh == null)
+        {
+            Mesh = null;
+            SelectedTriangles.Clear();
+            m_TriangleToSubmesh = null;
+            m_AdjacencyMap = null;
+            m_UvAdjacencyMap = null;
+            return;
+        }
+
+        // SkinnedMesh の「現在のポーズ」を反映するために BakeMesh を試みる
+        try
+        {
+            var tmp = new Mesh();
+            Smr.BakeMesh(tmp);
+
+            // Bakeが成功して頂点があるならそれを使う。失敗（頂点0）なら sharedMesh を使うフォールバック
+            if (tmp != null && tmp.vertexCount > 0)
+            {
+                m_BakedMesh = tmp;
+                Mesh = m_BakedMesh;
+            }
+            else
+            {
+                // 万が一 BakeMesh で空なら破棄して sharedMesh を使う
+                if (tmp != null) UnityEngine.Object.DestroyImmediate(tmp);
+                Mesh = Smr.sharedMesh;
+            }
+        }
+        catch (Exception)
+        {
+            // 安全策：例外が出たら sharedMesh を使う
+            RemoveBakedMeshIfAny();
+            Mesh = Smr.sharedMesh;
+        }
+
         SelectedTriangles.Clear();
         m_TriangleToSubmesh = MeshAnalysis.BuildTriangleToSubmeshMap(Mesh);
         m_AdjacencyMap = MeshAnalysis.BuildAdjacencyMap(Mesh);
         m_UvAdjacencyMap = MeshAnalysis.BuildUVAdjacencyMap(Mesh);
         EnsureTemporaryCollider();
+
     }
 
     /// <summary>
@@ -99,6 +154,7 @@ public class MeshMaskPainterCore
     public void OnDisable()
     {
         RemoveTemporaryColliderIfAny();
+        RemoveBakedMeshIfAny();
     }
 
     /// <summary>
@@ -471,6 +527,18 @@ public class MeshMaskPainterCore
         {
             UnityEngine.Object.DestroyImmediate(m_TempCollider);
             m_TempCollider = null;
+        }
+    }
+
+    /// <summary>
+    /// 作成したベイク用の一時Meshがあれば破棄する（メモリリーク防止）。
+    /// </summary>
+    private void RemoveBakedMeshIfAny()
+    {
+        if (m_BakedMesh != null)
+        {
+            UnityEngine.Object.DestroyImmediate(m_BakedMesh);
+            m_BakedMesh = null;
         }
     }
 
