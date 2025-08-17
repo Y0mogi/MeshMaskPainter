@@ -1,0 +1,229 @@
+// MeshAnalysis.cs
+
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+public static class MeshAnalysis
+{
+    /// <summary>
+    /// 各ポリゴンがどのサブメッシュに属するかをマッピングした配列を構築します。
+    /// </summary>
+    /// <param name="mesh">解析対象のメッシュ。</param>
+    /// <returns>ポリゴンのインデックスをキーとするサブメッシュインデックスの配列。</returns>
+    public static int[] BuildTriangleToSubmeshMap(Mesh mesh)
+    {
+        if (mesh == null) return null;
+
+        int triCount = mesh.triangles.Length / 3;
+        var map = new int[triCount];
+        int globalIdx = 0;
+        for (int s = 0; s < mesh.subMeshCount; s++)
+        {
+            var tris = mesh.GetTriangles(s);
+            for (int i = 0; i < tris.Length; i += 3)
+            {
+                if (globalIdx < map.Length) map[globalIdx] = s;
+                globalIdx++;
+            }
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// 3Dモデル上でのポリゴンの隣接関係マップを構築します。
+    /// </summary>
+    /// <param name="mesh">解析対象のメッシュ。</param>
+    /// <returns>ポリゴンのインデックスをキーとする、隣接ポリゴンリストの辞書。</returns>
+    public static Dictionary<int, List<int>> BuildAdjacencyMap(Mesh mesh)
+    {
+        var map = new Dictionary<int, List<int>>();
+        if (mesh == null) return map;
+
+        int[] triangles = mesh.triangles;
+        int triangleCount = triangles.Length / 3;
+        var edgeMap = new Dictionary<long, List<int>>();
+
+        for (int i = 0; i < triangleCount; i++)
+        {
+            int triBase = i * 3;
+            int v0 = triangles[triBase], v1 = triangles[triBase + 1], v2 = triangles[triBase + 2];
+            Action<int, int> AddEdge = (tv0, tv1) =>
+            {
+                long key = GetEdgeKey(tv0, tv1);
+                if (!edgeMap.ContainsKey(key)) edgeMap[key] = new List<int>();
+                edgeMap[key].Add(i);
+            };
+            AddEdge(v0, v1); AddEdge(v1, v2); AddEdge(v2, v0);
+        }
+
+        for (int i = 0; i < triangleCount; i++) map[i] = new List<int>();
+
+        foreach (var edgeTriangles in edgeMap.Values)
+        {
+            if (edgeTriangles.Count == 2)
+            {
+                int t0 = edgeTriangles[0], t1 = edgeTriangles[1];
+                if (!map[t0].Contains(t1)) map[t0].Add(t1);
+                if (!map[t1].Contains(t0)) map[t1].Add(t0);
+            }
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// UV座標上でのポリゴンの隣接関係マップを構築します。
+    /// </summary>
+    /// <param name="mesh">解析対象のメッシュ。</param>
+    /// <returns>ポリゴンのインデックスをキーとする、UV上で隣接するポリゴンリストの辞書。</returns>
+    public static Dictionary<int, List<int>> BuildUVAdjacencyMap(Mesh mesh)
+    {
+        var map = new Dictionary<int, List<int>>();
+        if (mesh == null || mesh.uv.Length == 0) return map;
+
+        int[] triangles = mesh.triangles;
+        Vector2[] uvs = mesh.uv;
+        int triangleCount = triangles.Length / 3;
+        var edgeToTriangles = new Dictionary<UvEdge, List<int>>();
+
+        for (int i = 0; i < triangleCount; i++)
+        {
+            int i0 = triangles[i * 3 + 0], i1 = triangles[i * 3 + 1], i2 = triangles[i * 3 + 2];
+            Vector2 uv0 = uvs[i0], uv1 = uvs[i1], uv2 = uvs[i2];
+
+            Action<Vector2, Vector2> AddEdge = (u, v) =>
+            {
+                var edge = new UvEdge(u, v);
+                if (!edgeToTriangles.ContainsKey(edge)) edgeToTriangles[edge] = new List<int>();
+                edgeToTriangles[edge].Add(i);
+            };
+            AddEdge(uv0, uv1); AddEdge(uv1, uv2); AddEdge(uv2, uv0);
+        }
+
+        for (int i = 0; i < triangleCount; i++) map[i] = new List<int>();
+
+        foreach (var pair in edgeToTriangles)
+        {
+            if (pair.Value.Count > 1)
+            {
+                for (int i = 0; i < pair.Value.Count; i++)
+                    for (int j = i + 1; j < pair.Value.Count; j++)
+                    {
+                        int t1 = pair.Value[i], t2 = pair.Value[j];
+                        if (!map[t1].Contains(t2)) map[t1].Add(t2);
+                        if (!map[t2].Contains(t1)) map[t2].Add(t1);
+                    }
+            }
+        }
+        return map;
+    }
+
+    /// <summary>
+    /// 高速なボックスブラーを適用します。
+    /// </summary>
+    /// <param name="pixels">処理対象のピクセル配列。</param>
+    /// <param name="w">画像の幅。</param>
+    /// <param name="h">画像の高さ。</param>
+    /// <param name="radius">ぼかしの半径。</param>
+    /// <param name="iterations">反復回数。</param>
+    public static void ApplyFastBlur(Color32[] pixels, int w, int h, int radius, int iterations)
+    {
+        var tempPixels = new Color32[pixels.Length];
+        for (var i = 0; i < iterations; i++)
+        {
+            BoxBlurPass(pixels, tempPixels, w, h, radius, true);
+            BoxBlurPass(tempPixels, pixels, w, h, radius, false);
+        }
+    }
+
+    /// <summary>
+    /// ボックスブラーの1パス（水平または垂直）を実行します。
+    /// </summary>
+    private static void BoxBlurPass(Color32[] source, Color32[] dest, int w, int h, int r, bool isHorizontal)
+    {
+        float kernelSize = r * 2 + 1;
+        if (isHorizontal)
+        {
+            for (int y = 0; y < h; y++)
+            {
+                float sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+                int rowOffset = y * w;
+                for (int i = -r; i <= r; i++) { int idx = Mathf.Clamp(i, 0, w - 1); var c = source[rowOffset + idx]; sumR += c.r; sumG += c.g; sumB += c.b; sumA += c.a; }
+                for (int x = 0; x < w; x++)
+                {
+                    dest[rowOffset + x] = new Color32((byte)(sumR / kernelSize), (byte)(sumG / kernelSize), (byte)(sumB / kernelSize), (byte)(sumA / kernelSize));
+                    int oldIdx = Mathf.Clamp(x - r, 0, w - 1); int newIdx = Mathf.Clamp(x + r + 1, 0, w - 1);
+                    var oldC = source[rowOffset + oldIdx]; var newC = source[rowOffset + newIdx];
+                    sumR += newC.r - oldC.r; sumG += newC.g - oldC.g; sumB += newC.b - oldC.b; sumA += newC.a - oldC.a;
+                }
+            }
+        }
+        else
+        {
+            for (int x = 0; x < w; x++)
+            {
+                float sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+                for (int i = -r; i <= r; i++) { int idx = Mathf.Clamp(i, 0, h - 1); var c = source[idx * w + x]; sumR += c.r; sumG += c.g; sumB += c.b; sumA += c.a; }
+                for (int y = 0; y < h; y++)
+                {
+                    dest[y * w + x] = new Color32((byte)(sumR / kernelSize), (byte)(sumG / kernelSize), (byte)(sumB / kernelSize), (byte)(sumA / kernelSize));
+                    int oldIdx = Mathf.Clamp(y - r, 0, h - 1); int newIdx = Mathf.Clamp(y + r + 1, 0, h - 1);
+                    var oldC = source[oldIdx * w + x]; var newC = source[newIdx * w + x];
+                    sumR += newC.r - oldC.r; sumG += newC.g - oldC.g; sumB += newC.b - oldC.b; sumA += newC.a - oldC.a;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 指定されたUV座標の三角形をテクスチャに塗りつぶします。
+    /// </summary>
+    public static void FillTriangle(Texture2D tex, Vector2 p0, Vector2 p1, Vector2 p2, Color32 color)
+    {
+        int w = tex.width; int h = tex.height;
+        int minX = Mathf.Clamp(Mathf.FloorToInt(Mathf.Min(p0.x, Mathf.Min(p1.x, p2.x))), 0, w - 1);
+        int maxX = Mathf.Clamp(Mathf.CeilToInt(Mathf.Max(p0.x, Mathf.Max(p1.x, p2.x))), 0, w - 1);
+        int minY = Mathf.Clamp(Mathf.FloorToInt(Mathf.Min(p0.y, Mathf.Min(p1.y, p2.y))), 0, h - 1);
+        int maxY = Mathf.Clamp(Mathf.CeilToInt(Mathf.Max(p0.y, Mathf.Max(p1.y, p2.y))), 0, h - 1);
+
+        float Area(Vector2 a, Vector2 b, Vector2 c) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+
+        if (Mathf.Approximately(Area(p0, p1, p2), 0f)) return;
+
+        for (int y = minY; y <= maxY; y++)
+        {
+            for (int x = minX; x <= maxX; x++)
+            {
+                Vector2 p = new Vector2(x + 0.5f, y + 0.5f);
+                float w0 = Area(p1, p2, p), w1 = Area(p2, p0, p), w2 = Area(p0, p1, p);
+                bool hasNeg = (w0 < 0) || (w1 < 0) || (w2 < 0);
+                bool hasPos = (w0 > 0) || (w1 > 0) || (w2 > 0);
+                if (!(hasNeg && hasPos))
+                {
+                    tex.SetPixel(x, y, color);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 2つの頂点インデックスから、順序に依存しない一意のlong型のキーを生成します。
+    /// </summary>
+    private static long GetEdgeKey(int vA, int vB) => vA < vB ? ((long)vA << 32) | (uint)vB : ((long)vB << 32) | (uint)vA;
+
+    /// <summary>
+    /// UV座標のペアをDictionaryのキーとして使用するためのヘルパー構造体。
+    /// </summary>
+    private readonly struct UvEdge : IEquatable<UvEdge>
+    {
+        private readonly Vector2 u, v;
+        public UvEdge(Vector2 u, Vector2 v)
+        {
+            if (u.x > v.x || (u.x == v.x && u.y > v.y)) { this.u = v; this.v = u; }
+            else { this.u = u; this.v = v; }
+        }
+        public bool Equals(UvEdge other) => u.Equals(other.u) && v.Equals(other.v);
+        public override bool Equals(object obj) => obj is UvEdge other && Equals(other);
+        public override int GetHashCode() => (u, v).GetHashCode();
+    }
+}
