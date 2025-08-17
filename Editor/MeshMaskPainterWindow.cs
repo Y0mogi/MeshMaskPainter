@@ -16,6 +16,8 @@ public class MeshMaskPainterWindow : EditorWindow
     private int m_HoverTriangle = -1;
     private int m_LastProcessedTriangle = -1;
 
+    private int m_ExportTab = 0;
+
     private bool m_TargetFoldout = true;
     private bool m_PaintDisplayFoldout = true;
     private bool m_SelectionToolsFoldout = true;
@@ -232,7 +234,6 @@ public class MeshMaskPainterWindow : EditorWindow
 
             EditorGUILayout.Space(4);
             EditorGUILayout.LabelField("表示設定", EditorStyles.miniBoldLabel);
-            //m_Core.EdgeHighlightWidth = EditorGUILayout.Slider("エッジの太さ (px)", m_Core.EdgeHighlightWidth, 0.5f, 6f);
             m_Core.EdgeSelectionColor = EditorGUILayout.ColorField("選択済み箇所の色", m_Core.EdgeSelectionColor);
             m_Core.EdgeHighlightColor = EditorGUILayout.ColorField("選択中のハイライト色", m_Core.EdgeHighlightColor);
             m_Core.ShowWireframe = EditorGUILayout.ToggleLeft("選択済み箇所をワイヤーフレームを表示", m_Core.ShowWireframe);
@@ -281,44 +282,101 @@ public class MeshMaskPainterWindow : EditorWindow
     {
         using (new EditorGUILayout.VerticalScope("box"))
         {
-            m_Core.ExportUseBaseTextureSize = EditorGUILayout.ToggleLeft("ベーステクスチャと同解像度で出力", m_Core.ExportUseBaseTextureSize);
-            using (new EditorGUI.DisabledScope(m_Core.ExportUseBaseTextureSize))
-            {
-                m_Core.ExportWidth = EditorGUILayout.IntPopup("出力解像度 (幅)", m_Core.ExportWidth, new[] { "1024", "2048", "4096" }, new[] { 1024, 2048, 4096 });
-                m_Core.ExportHeight = EditorGUILayout.IntPopup("出力解像度 (高さ)", m_Core.ExportHeight, new[] { "1024", "2048", "4096" }, new[] { 1024, 2048, 4096 });
-            }
-            m_Core.ExportAlphaZeroBackground = EditorGUILayout.ToggleLeft("背景を透過 (アルファ=0)", m_Core.ExportAlphaZeroBackground);
+            m_ExportTab = GUILayout.Toolbar(m_ExportTab, new[] { "マスク出力", "頂点カラー", "テクスチャ書込" });
             EditorGUILayout.Space(5);
-            using (new EditorGUILayout.VerticalScope("box"))
+
+            switch (m_ExportTab)
             {
-                m_Core.EnableBlur = EditorGUILayout.ToggleLeft("輪郭のぼかしを有効にする", m_Core.EnableBlur);
-                using (new EditorGUI.DisabledScope(!m_Core.EnableBlur))
-                {
-                    int oldRadius = m_Core.BlurRadius; int oldIterations = m_Core.BlurIterations;
-                    m_Core.BlurRadius = EditorGUILayout.IntSlider("ぼかし半径 (px)", m_Core.BlurRadius, 1, 50);
-                    m_Core.BlurIterations = EditorGUILayout.IntSlider("ぼかし強度 (反復回数)", m_Core.BlurIterations, 1, 5);
-                    if ((oldRadius != m_Core.BlurRadius || oldIterations != m_Core.BlurIterations) && m_IsPreviewBlurred) { ApplyBlurToPreview(); }
-                }
-            }
-            EditorGUILayout.Space(5);
-            EditorGUILayout.BeginHorizontal();
-            m_Core.ExportFolder = EditorGUILayout.TextField("デフォルトの出力先", m_Core.ExportFolder);
-            if (GUILayout.Button("…", GUILayout.Width(28)))
-            {
-                string chosen = EditorUtility.OpenFolderPanel("デフォルトの出力先を選択", Application.dataPath, "");
-                if (!string.IsNullOrEmpty(chosen))
-                {
-                    if (chosen.StartsWith(Application.dataPath)) m_Core.ExportFolder = "Assets" + chosen.Substring(Application.dataPath.Length);
-                    else m_Core.ExportFolder = chosen;
-                }
-            }
-            EditorGUILayout.EndHorizontal();
-            using (new EditorGUI.DisabledScope(!m_Core.IsReady()))
-            {
-                if (GUILayout.Button("マスクを出力 (現在の対象)")) m_Core.ExportMaskTextures();
-                if (GUILayout.Button("全サブメッシュを個別に出力")) m_Core.ExportMaskTextures(splitPerSubmesh: true);
+                case 0: DrawExportMaskTextureUI(); break;
+                case 1: DrawBakeVertexColorUI(); break;
+                case 2: DrawWriteToTextureUI(); break;
             }
         }
+    }
+
+    private void DrawExportMaskTextureUI()
+    {
+        EditorGUILayout.LabelField("新規マスクテクスチャとして出力します。", EditorStyles.wordWrappedLabel);
+        EditorGUILayout.Space(5);
+        m_Core.ExportUseBaseTextureSize = EditorGUILayout.ToggleLeft("ベーステクスチャと同解像度で出力", m_Core.ExportUseBaseTextureSize);
+        using (new EditorGUI.DisabledScope(m_Core.ExportUseBaseTextureSize))
+        {
+            m_Core.ExportWidth = EditorGUILayout.IntPopup("出力解像度 (幅)", m_Core.ExportWidth, new[] { "1024", "2048", "4096" }, new[] { 1024, 2048, 4096 });
+            m_Core.ExportHeight = EditorGUILayout.IntPopup("出力解像度 (高さ)", m_Core.ExportHeight, new[] { "1024", "2048", "4096" }, new[] { 1024, 2048, 4096 });
+        }
+        m_Core.ExportAlphaZeroBackground = EditorGUILayout.ToggleLeft("背景を透過 (アルファ=0)", m_Core.ExportAlphaZeroBackground);
+
+        DrawBlurSettings();
+
+        EditorGUILayout.BeginHorizontal();
+        m_Core.ExportFolder = EditorGUILayout.TextField("デフォルトの出力先", m_Core.ExportFolder);
+        if (GUILayout.Button("…", GUILayout.Width(28)))
+        {
+            string chosen = EditorUtility.OpenFolderPanel("デフォルトの出力先を選択", Application.dataPath, "");
+            if (!string.IsNullOrEmpty(chosen))
+            {
+                if (chosen.StartsWith(Application.dataPath)) m_Core.ExportFolder = "Assets" + chosen.Substring(Application.dataPath.Length);
+                else m_Core.ExportFolder = chosen;
+            }
+        }
+        EditorGUILayout.EndHorizontal();
+        using (new EditorGUI.DisabledScope(!m_Core.IsReady()))
+        {
+            if (GUILayout.Button("マスクを出力 (現在の対象)")) m_Core.ExportMaskTextures();
+            if (GUILayout.Button("全サブメッシュを個別に出力")) m_Core.ExportMaskTextures(splitPerSubmesh: true);
+        }
+    }
+
+    private void DrawBakeVertexColorUI()
+    {
+        EditorGUILayout.HelpBox("選択範囲を頂点カラーに書き込み、新しいメッシュアセットを作成します。", MessageType.Info);
+        m_Core.TargetVertexColorChannel = (TargetChannel)EditorGUILayout.EnumFlagsField("書き込み先チャンネル", m_Core.TargetVertexColorChannel);
+        EditorGUILayout.Space(5);
+        using (new EditorGUI.DisabledScope(!m_Core.IsReady() || m_Core.Smr.sharedMesh == null))
+        {
+            if (GUILayout.Button("頂点カラーへベイク"))
+            {
+                m_Core.BakeToVertexColor();
+            }
+        }
+    }
+
+    private void DrawWriteToTextureUI()
+    {
+        EditorGUILayout.HelpBox("既存のテクスチャの特定チャンネルにマスク情報を上書きします。", MessageType.Info);
+        m_Core.TargetTextureForWrite = (Texture2D)EditorGUILayout.ObjectField("書き込み先テクスチャ", m_Core.TargetTextureForWrite, typeof(Texture2D), false);
+        if (m_Core.TargetTextureForWrite != null && !m_Core.TargetTextureForWrite.isReadable)
+        {
+            EditorGUILayout.HelpBox("テクスチャのインポート設定で Read/Write を有効にしてください。", MessageType.Warning);
+        }
+        m_Core.TargetTextureChannel = (TargetChannel)EditorGUILayout.EnumFlagsField("書き込み先チャンネル", m_Core.TargetTextureChannel);
+
+        DrawBlurSettings();
+
+        using (new EditorGUI.DisabledScope(!m_Core.IsReady() || m_Core.TargetTextureForWrite == null || !m_Core.TargetTextureForWrite.isReadable))
+        {
+            if (GUILayout.Button("指定チャンネルへ書き込み"))
+            {
+                m_Core.WriteToTextureChannel();
+            }
+        }
+    }
+
+    private void DrawBlurSettings()
+    {
+        EditorGUILayout.Space(5);
+        using (new EditorGUILayout.VerticalScope("box"))
+        {
+            m_Core.EnableBlur = EditorGUILayout.ToggleLeft("輪郭のぼかしを有効にする", m_Core.EnableBlur);
+            using (new EditorGUI.DisabledScope(!m_Core.EnableBlur))
+            {
+                int oldRadius = m_Core.BlurRadius; int oldIterations = m_Core.BlurIterations;
+                m_Core.BlurRadius = EditorGUILayout.IntSlider("ぼかし半径 (px)", m_Core.BlurRadius, 1, 50);
+                m_Core.BlurIterations = EditorGUILayout.IntSlider("ぼかし強度 (反復回数)", m_Core.BlurIterations, 1, 5);
+                if ((oldRadius != m_Core.BlurRadius || oldIterations != m_Core.BlurIterations) && m_IsPreviewBlurred) { ApplyBlurToPreview(); }
+            }
+        }
+        EditorGUILayout.Space(5);
     }
 
     /// <summary>
@@ -456,7 +514,7 @@ public class MeshMaskPainterWindow : EditorWindow
                 int i0 = tris[m_HoverTriangle * 3 + 0];
                 int i1 = tris[m_HoverTriangle * 3 + 1];
                 int i2 = tris[m_HoverTriangle * 3 + 2];
-                float hoverWidth = Mathf.Max(m_Core.EdgeHighlightWidth + 0.5f, 1f);
+                float hoverWidth = Mathf.Max(1.5f + 0.5f, 1f); // m_Core.EdgeHighlightWidth を定数に置き換え
                 DrawLineAA(verts[i0], verts[i1], hoverWidth);
                 DrawLineAA(verts[i1], verts[i2], hoverWidth);
                 DrawLineAA(verts[i2], verts[i0], hoverWidth);
@@ -465,7 +523,6 @@ public class MeshMaskPainterWindow : EditorWindow
             Handles.zTest = UnityEngine.Rendering.CompareFunction.LessEqual;
             Handles.color = Color.white;
         }
-
     }
 
     /// <summary>

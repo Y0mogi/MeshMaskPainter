@@ -7,6 +7,15 @@ using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
+[Flags]
+public enum TargetChannel
+{
+    R = 1 << 0, // 1
+    G = 1 << 1, // 2
+    B = 1 << 2, // 4
+    A = 1 << 3  // 8
+}
+
 [Serializable]
 public class MeshMaskPainterCore
 {
@@ -34,6 +43,11 @@ public class MeshMaskPainterCore
     public bool EnableBlur = false;
     public int BlurRadius = 8;
     public int BlurIterations = 3;
+
+    public Texture2D TargetTextureForWrite;
+    public TargetChannel TargetTextureChannel = TargetChannel.A;
+    public TargetChannel TargetVertexColorChannel = TargetChannel.A;
+
 
     [SerializeField]
     public List<int> SelectedTriangles = new List<int>();
@@ -80,9 +94,7 @@ public class MeshMaskPainterCore
     /// <param name="newSmr">新しいターゲット。</param>
     public void SetTarget(SkinnedMeshRenderer newSmr)
     {
-        // 以前に作った一時ベイクメッシュがあれば破棄
         RemoveBakedMeshIfAny();
-
         Smr = newSmr;
         SetupMeshAndMappings();
     }
@@ -92,7 +104,6 @@ public class MeshMaskPainterCore
     /// </summary>
     public void SetupMeshAndMappings()
     {
-        // 前回のベイクメッシュをクリア（既に SetTarget でも呼ぶが二重保険）
         RemoveBakedMeshIfAny();
 
         if (Smr == null)
@@ -105,7 +116,6 @@ public class MeshMaskPainterCore
             return;
         }
 
-        // sharedMesh が無い場合は処理しない
         if (Smr.sharedMesh == null)
         {
             Mesh = null;
@@ -116,13 +126,11 @@ public class MeshMaskPainterCore
             return;
         }
 
-        // SkinnedMesh の「現在のポーズ」を反映するために BakeMesh を試みる
         try
         {
             var tmp = new Mesh();
             Smr.BakeMesh(tmp);
 
-            // Bakeが成功して頂点があるならそれを使う。失敗（頂点0）なら sharedMesh を使うフォールバック
             if (tmp != null && tmp.vertexCount > 0)
             {
                 m_BakedMesh = tmp;
@@ -130,14 +138,12 @@ public class MeshMaskPainterCore
             }
             else
             {
-                // 万が一 BakeMesh で空なら破棄して sharedMesh を使う
                 if (tmp != null) UnityEngine.Object.DestroyImmediate(tmp);
                 Mesh = Smr.sharedMesh;
             }
         }
         catch (Exception)
         {
-            // 安全策：例外が出たら sharedMesh を使う
             RemoveBakedMeshIfAny();
             Mesh = Smr.sharedMesh;
         }
@@ -491,6 +497,167 @@ public class MeshMaskPainterCore
     }
 
     /// <summary>
+    /// マスク情報を頂点カラーにベイクします。
+    /// </summary>
+    public void BakeToVertexColor()
+    {
+        if (!IsReady()) return;
+        if (TargetVertexColorChannel == 0)
+        {
+            EditorUtility.DisplayDialog("エラー", "書き込み先のチャンネルが選択されていません。", "OK");
+            return;
+        }
+        if (!EditorUtility.DisplayDialog("頂点カラーへのベイク",
+            "この操作は新しいメッシュアセットを作成します。\n" +
+            "元のメッシュアセットは変更されませんが、シーン内のオブジェクトのメッシュ参照は新しいアセットに置き換えられます。\n" +
+            "続行しますか？", "はい", "いいえ"))
+        {
+            return;
+        }
+
+        string originalPath = AssetDatabase.GetAssetPath(Smr.sharedMesh);
+        string newPath = EditorUtility.SaveFilePanelInProject(
+            "新しいメッシュアセットを保存",
+            $"{Path.GetFileNameWithoutExtension(originalPath)}_VColor.asset",
+            "asset",
+            "新しいメッシュアセットの保存先を選択してください");
+
+        if (string.IsNullOrEmpty(newPath)) return;
+
+        Mesh newMesh = UnityEngine.Object.Instantiate(Mesh);
+        newMesh.name = Path.GetFileNameWithoutExtension(newPath);
+
+        Color[] colors = newMesh.vertexCount > 0 && newMesh.colors != null && newMesh.colors.Length == newMesh.vertexCount
+            ? newMesh.colors
+            : new Color[newMesh.vertexCount];
+        if (colors.Length == 0)
+        {
+            Debug.LogError("[メッシュマスクペインター] メッシュに頂点データが存在しないため、頂点カラーをベイクできません。");
+            UnityEngine.Object.DestroyImmediate(newMesh);
+            return;
+        }
+
+        var tris = newMesh.triangles;
+        var selectedVerts = new HashSet<int>();
+        foreach (var triIdx in SelectedTriangles)
+        {
+            if (IsTriangleInActiveScope(triIdx))
+            {
+                selectedVerts.Add(tris[triIdx * 3 + 0]);
+                selectedVerts.Add(tris[triIdx * 3 + 1]);
+                selectedVerts.Add(tris[triIdx * 3 + 2]);
+            }
+        }
+        foreach (int vertIdx in selectedVerts)
+        {
+            if (TargetVertexColorChannel.HasFlag(TargetChannel.R)) colors[vertIdx].r = 1f;
+            if (TargetVertexColorChannel.HasFlag(TargetChannel.G)) colors[vertIdx].g = 1f;
+            if (TargetVertexColorChannel.HasFlag(TargetChannel.B)) colors[vertIdx].b = 1f;
+            if (TargetVertexColorChannel.HasFlag(TargetChannel.A)) colors[vertIdx].a = 1f;
+        }
+        newMesh.colors = colors;
+
+        AssetDatabase.CreateAsset(newMesh, newPath);
+        AssetDatabase.SaveAssets();
+
+        Smr.sharedMesh = newMesh;
+
+        SetupMeshAndMappings();
+
+        EditorUtility.DisplayDialog("成功", $"頂点カラーをベイクし、新しいメッシュアセットを保存しました:\n{newPath}", "OK");
+    }
+
+    /// <summary>
+    /// マスク情報を既存のテクスチャの特定チャンネルに書き込みます。
+    /// </summary>
+    public void WriteToTextureChannel()
+    {
+        if (TargetTextureForWrite == null)
+        {
+            EditorUtility.DisplayDialog("エラー", "書き込み先のテクスチャが指定されていません。", "OK");
+            return;
+        }
+        if (TargetTextureChannel == 0)
+        {
+            EditorUtility.DisplayDialog("エラー", "書き込み先のチャンネルが選択されていません。", "OK");
+            return;
+        }
+
+        string path = AssetDatabase.GetAssetPath(TargetTextureForWrite);
+        var importer = AssetImporter.GetAtPath(path) as TextureImporter;
+        if (importer == null || !importer.isReadable)
+        {
+            EditorUtility.DisplayDialog("エラー", "書き込み先のテクスチャの Read/Write を有効にしてください。", "OK");
+            return;
+        }
+
+        RenderTexture tmpRT = RenderTexture.GetTemporary(
+            TargetTextureForWrite.width,
+            TargetTextureForWrite.height,
+            0,
+            RenderTextureFormat.Default,
+            RenderTextureReadWrite.Linear);
+
+        Graphics.Blit(TargetTextureForWrite, tmpRT);
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture.active = tmpRT;
+
+        Texture2D writableTex = new Texture2D(TargetTextureForWrite.width, TargetTextureForWrite.height, TextureFormat.RGBA32, false);
+        writableTex.ReadPixels(new Rect(0, 0, tmpRT.width, tmpRT.height), 0, 0);
+        writableTex.Apply();
+
+        RenderTexture.active = previous;
+        RenderTexture.ReleaseTemporary(tmpRT);
+
+        var maskTex = new Texture2D(TargetTextureForWrite.width, TargetTextureForWrite.height, TextureFormat.RGBA32, false, true);
+        var pixels = new Color32[maskTex.width * maskTex.height];
+        for (int i = 0; i < pixels.Length; i++) pixels[i] = new Color32(0, 0, 0, 0);
+        maskTex.SetPixels32(pixels);
+
+        var uvs = Mesh.uv;
+        var tris = Mesh.triangles;
+        foreach (var triIdx in SelectedTriangles)
+        {
+            if (!IsTriangleInActiveScope(triIdx)) continue;
+            int i0 = tris[triIdx * 3 + 0], i1 = tris[triIdx * 3 + 1], i2 = tris[triIdx * 3 + 2];
+            Vector2 uv0 = new Vector2(uvs[i0].x * maskTex.width, uvs[i0].y * maskTex.height);
+            Vector2 uv1 = new Vector2(uvs[i1].x * maskTex.width, uvs[i1].y * maskTex.height);
+            Vector2 uv2 = new Vector2(uvs[i2].x * maskTex.width, uvs[i2].y * maskTex.height);
+            MeshAnalysis.FillTriangle(maskTex, uv0, uv1, uv2, Color.white);
+        }
+        maskTex.Apply(false);
+
+        if (EnableBlur && BlurRadius > 0 && BlurIterations > 0)
+        {
+            var sharpPixels = maskTex.GetPixels32();
+            MeshAnalysis.ApplyFastBlur(sharpPixels, maskTex.width, maskTex.height, BlurRadius, BlurIterations);
+            maskTex.SetPixels32(sharpPixels);
+            maskTex.Apply(false);
+        }
+
+        var targetPixels = writableTex.GetPixels();
+        var maskPixels = maskTex.GetPixels();
+
+        for (int i = 0; i < targetPixels.Length; i++)
+        {
+            if (TargetTextureChannel.HasFlag(TargetChannel.R)) targetPixels[i].r = maskPixels[i].r;
+            if (TargetTextureChannel.HasFlag(TargetChannel.G)) targetPixels[i].g = maskPixels[i].g;
+            if (TargetTextureChannel.HasFlag(TargetChannel.B)) targetPixels[i].b = maskPixels[i].b;
+            if (TargetTextureChannel.HasFlag(TargetChannel.A)) targetPixels[i].a = maskPixels[i].r;
+        }
+        writableTex.SetPixels(targetPixels);
+        writableTex.Apply(false);
+
+        File.WriteAllBytes(path, writableTex.EncodeToPNG());
+        AssetDatabase.Refresh();
+
+        UnityEngine.Object.DestroyImmediate(maskTex);
+        UnityEngine.Object.DestroyImmediate(writableTex);
+
+        EditorUtility.DisplayDialog("成功", $"指定チャンネルへの書き込みが完了しました:\n{path}", "OK");
+    }
+
+    /// <summary>
     /// サブメッシュ選択用のUIオプション（ラベルと値）を取得します。
     /// </summary>
     public (string[], int[]) GetSubmeshOptions()
@@ -520,8 +687,6 @@ public class MeshMaskPainterCore
         }
         else if (col == m_TempCollider)
         {
-            // 既に自身で追加したColliderが存在する場合、
-            // Bakeし直した新しいメッシュをセットし直す
             m_TempCollider.sharedMesh = Mesh;
         }
     }
