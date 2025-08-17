@@ -17,6 +17,8 @@ public class MeshMaskPainterCore
     public bool OnlyActiveSubmesh = false;
     public int ActiveSubmesh = -1;
     public float EdgeHighlightWidth = 1.5f;
+    public Color EdgeHighlightColor = Color.red;
+    public Color EdgeSelectionColor = Color.blue;
     public bool HoverHighlight = true;
     public bool AddTemporaryCollider = true;
     public bool ShowWireframe = true;
