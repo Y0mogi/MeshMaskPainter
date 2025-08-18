@@ -56,7 +56,7 @@ public class MeshMaskPainterWindow : EditorWindow
         public static readonly GUIContent OnlyActiveSubmesh = new GUIContent("アクティブなサブメッシュのみ", "チェックを入れると、ドロップダウンで選択したサブメッシュにのみペイントや選択操作が影響するようになります。");
         public static readonly GUIContent ShowWireframe = new GUIContent("選択箇所のワイヤーフレーム表示", "シーンビューで、選択中のポリゴンをワイヤーフレームで表示します。");
         public static readonly GUIContent HoverHighlight = new GUIContent("ホバー箇所をハイライト", "シーンビューで、マウスカーソルが乗っているポリゴンをハイライト表示します。");
-        public static readonly GUIContent IsolateSelection = new GUIContent("選択箇所のみ分離表示 (Isolate)", "シーンビューで、選択中のポリゴンのみを表示します。モデルの裏側などを確認するのに便利です。");
+        public static readonly GUIContent IsolateSelection = new GUIContent("選択箇所のみ分離表示", "シーンビューで、選択中のポリゴンのみを表示します。モデルの裏側などを確認するのに便利です。");
         public static readonly GUIContent BaseTexture = new GUIContent("ベーステクスチャ (参照用)", "UVプレビューの背景に表示するテクスチャを指定します。モデルのテクスチャを指定すると、どの部分を塗っているか分かりやすくなります。");
         public static readonly GUIContent ShowBaseTextureInPreview = new GUIContent("プレビューにベーステクスチャを表示", "チェックを入れると、UVプレビューの背景に上記で指定したベーステクスチャが表示されます。");
         public static readonly GUIContent AddTemporaryCollider = new GUIContent("一時的なMeshColliderを自動追加", "ペイント対象のオブジェクトにColliderがない場合、レイキャストのために一時的なMeshColliderを自動で追加します。通常はオンのままで問題ありません。");
@@ -262,7 +262,7 @@ public class MeshMaskPainterWindow : EditorWindow
         {
             m_ScrollPos = EditorGUILayout.BeginScrollView(m_ScrollPos);
 
-            EditorGUILayout.LabelField("ターゲット設定", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("アバター選択", EditorStyles.boldLabel);
             DrawTargetSettings();
 
             EditorGUILayout.Space(10);
@@ -327,7 +327,7 @@ public class MeshMaskPainterWindow : EditorWindow
             }
             else if (m_TargetGameObject != null)
             {
-                EditorGUILayout.HelpBox("オブジェクトから使用するレンダラーを選択してください。", MessageType.Info);
+                EditorGUILayout.HelpBox("使用するアバターを選択してください。", MessageType.Info);
             }
 
             if (m_TargetGameObject != null)
@@ -423,6 +423,7 @@ public class MeshMaskPainterWindow : EditorWindow
         using (new EditorGUILayout.VerticalScope("box"))
         {
             m_Core.PaintMode = GUILayout.Toolbar(m_Core.PaintMode ? 0 : 1, new[] { Tooltips.PaintMode, Tooltips.EraseMode }) == 0;
+            EditorGUILayout.HelpBox("Shift + 左クリックでUVアイランド選択ができます", MessageType.Info);
             EditorGUILayout.Space(4);
 
             using (new EditorGUILayout.HorizontalScope())
@@ -500,7 +501,7 @@ public class MeshMaskPainterWindow : EditorWindow
     /// </summary>
     private void DrawExportMaskTextureUI()
     {
-        EditorGUILayout.LabelField("新規マスクテクスチャとして出力します。", EditorStyles.wordWrappedLabel);
+        EditorGUILayout.HelpBox("新規マスクテクスチャとして出力します。", MessageType.Info);
         EditorGUILayout.Space(5);
         m_Core.ExportUseBaseTextureSize = EditorGUILayout.ToggleLeft("ベーステクスチャと同解像度で出力", m_Core.ExportUseBaseTextureSize);
         using (new EditorGUI.DisabledScope(m_Core.ExportUseBaseTextureSize))
@@ -816,7 +817,7 @@ public class MeshMaskPainterWindow : EditorWindow
                 Handles.DrawAAPolyLine(2f, verts[i0], verts[i1], verts[i2], verts[i0]);
             }
             Handles.zTest = UnityEngine.Rendering.CompareFunction.LessEqual;
-            Handles.color = Color.white;
+            Handles.color = m_Core.PreviewSelectColor;
         }
     }
 

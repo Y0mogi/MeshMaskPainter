@@ -33,6 +33,7 @@ public class MeshMaskPainterCore
     public bool ShowBaseTextureInPreview = false;
 
     public int PreviewSize = 1024;
+    public Color PreviewSelectColor = Color.red;
     public bool ExportUseBaseTextureSize = true;
     public int ExportWidth = 2048;
     public int ExportHeight = 2048;
