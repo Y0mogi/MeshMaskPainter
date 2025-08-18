@@ -22,7 +22,7 @@ public class MeshMaskPainterWindow : EditorWindow
 
     private Mesh m_IsolatedMesh;
     private bool m_IsolateMeshDirty = true;
-    private bool m_Is2DPaintEnabled = false;
+    private bool m_Is2DPaintEnabled = true;
 
     private Vector2 m_ScrollPos;
     private Vector2 m_RendererListScrollPos;
@@ -197,7 +197,7 @@ public class MeshMaskPainterWindow : EditorWindow
                     m_UvPreviewPan = Vector2.zero;
                     m_UvPreviewZoom = 1.0f;
                 }
-                m_Is2DPaintEnabled = GUILayout.Toggle(m_Is2DPaintEnabled, Tooltips.TwoDPaint, EditorStyles.toolbarButton, GUILayout.Width(80));
+                //m_Is2DPaintEnabled = GUILayout.Toggle(m_Is2DPaintEnabled, Tooltips.TwoDPaint, EditorStyles.toolbarButton, GUILayout.Width(80));
             }
 
             using (new EditorGUILayout.VerticalScope("box", GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true)))
