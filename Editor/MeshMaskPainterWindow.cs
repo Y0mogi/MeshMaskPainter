@@ -207,10 +207,16 @@ public class MeshMaskPainterWindow : EditorWindow
                 if (currentPreview != null)
                 {
                     Rect aspectRect = MeshMaskPainterCore.GUITool.GetAspectRect(rect, (float)currentPreview.width / currentPreview.height);
+                    // マウスがこのウィンドウ上にある時のみ、イベント処理を行うように変更
+                    if (Event.current != null && EditorWindow.mouseOverWindow == this)
+                    {
+                        HandleUvPreviewControls(aspectRect);
 
-                    // --- UVプレビュー操作のハンドリングを追加 ---
-                    HandleUvPreviewControls(aspectRect);
-
+                        if (m_Is2DPaintEnabled)
+                        {
+                            Handle2DPaintInput(aspectRect);
+                        }
+                    }
                     // 背景を黒で塗りつぶす
                     EditorGUI.DrawRect(aspectRect, Color.black);
 
@@ -220,11 +226,6 @@ public class MeshMaskPainterWindow : EditorWindow
                     float texCoordY = 1f - m_UvPreviewPan.y - texCoordHeight;
                     Rect texCoords = new Rect(m_UvPreviewPan.x, texCoordY, 1f / m_UvPreviewZoom, texCoordHeight);
                     GUI.DrawTextureWithTexCoords(aspectRect, currentPreview, texCoords, true);
-
-                    if (m_Is2DPaintEnabled)
-                    {
-                        Handle2DPaintInput(aspectRect);
-                    }
                 }
             }
 
