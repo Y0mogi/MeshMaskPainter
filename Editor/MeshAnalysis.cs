@@ -7,7 +7,7 @@ using UnityEngine;
 public static class MeshAnalysis
 {
     /// <summary>
-    /// 各ポリゴンがどのサブメッシュに属するかをマッピングした配列を構築します。
+    // 各ポリゴンがどのサブメッシュに属するかをマッピングした配列を構築します。
     /// </summary>
     /// <param name="mesh">解析対象のメッシュ。</param>
     /// <returns>ポリゴンのインデックスをキーとするサブメッシュインデックスの配列。</returns>
@@ -65,7 +65,7 @@ public static class MeshAnalysis
             {
                 int t0 = edgeTriangles[0], t1 = edgeTriangles[1];
                 if (!map[t0].Contains(t1)) map[t0].Add(t1);
-                if (!map[t1].Contains(t0)) map[t1].Add(t0);
+                if (!map[t1].Contains(t0)) map[t1].Add(t1);
             }
         }
         return map;
@@ -117,6 +117,38 @@ public static class MeshAnalysis
         }
         return map;
     }
+
+    /// <summary>
+    /// 3D空間で隣接し、かつUVも連続しているポリゴンの隣接マップを構築します。
+    /// </summary>
+    /// <param name="mesh">解析対象のメッシュ。</param>
+    /// <param name="fullAdjacencyMap">3D空間での完全な隣接マップ。</param>
+    /// <param name="uvAdjacencyMap">UV空間での隣接マップ。</param>
+    /// <returns>UVの切れ目を考慮した隣接ポリゴンリストの辞書。</returns>
+    public static Dictionary<int, List<int>> BuildUVContiguousAdjacencyMap(Mesh mesh, Dictionary<int, List<int>> fullAdjacencyMap, Dictionary<int, List<int>> uvAdjacencyMap)
+    {
+        var map = new Dictionary<int, List<int>>();
+        if (mesh == null || fullAdjacencyMap == null || uvAdjacencyMap == null) return map;
+
+        int triCount = mesh.triangles.Length / 3;
+        for (int i = 0; i < triCount; i++)
+        {
+            map[i] = new List<int>();
+            if (fullAdjacencyMap.TryGetValue(i, out var neighbors) && uvAdjacencyMap.TryGetValue(i, out var uvNeighbors))
+            {
+                var uvNeighborSet = new HashSet<int>(uvNeighbors);
+                foreach (var neighbor in neighbors)
+                {
+                    if (uvNeighborSet.Contains(neighbor))
+                    {
+                        map[i].Add(neighbor);
+                    }
+                }
+            }
+        }
+        return map;
+    }
+
 
     /// <summary>
     /// 高速なボックスブラーを適用します。

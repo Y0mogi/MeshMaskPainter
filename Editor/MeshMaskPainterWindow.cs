@@ -33,6 +33,40 @@ public class MeshMaskPainterWindow : EditorWindow
     private bool m_ShowRendererSelection = false;
     private const int RENDERER_PREVIEW_SIZE = 64;
 
+    private Vector2 m_UvPreviewPan = Vector2.zero;
+    private float m_UvPreviewZoom = 1.0f;
+    private const float MIN_ZOOM = 0.2f;
+    private const float MAX_ZOOM = 50.0f;
+
+    /// <summary>
+    /// UI要素のツールチップを管理するための内部クラス
+    /// </summary>
+    private static class Tooltips
+    {
+        public static readonly GUIContent TargetObject = new GUIContent("ターゲットオブジェクト", "マスクをペイントしたいGameObjectをここにドラッグ＆ドロップします。");
+        public static readonly GUIContent RebuildMeshInfo = new GUIContent("メッシュ情報を再構築", "メッシュが変更された場合や、表示がおかしい場合にクリックして、メッシュの内部データを再計算します。");
+        public static readonly GUIContent ClearSelection = new GUIContent("クリア", "現在選択されているポリゴンをすべて解除します。");
+        public static readonly GUIContent InvertSelection = new GUIContent("反転", "選択範囲を反転します。選択されていないポリゴンが選択され、選択中のポリゴンは解除されます。");
+        public static readonly GUIContent GrowSelection = new GUIContent("選択を拡張 (Grow)", "現在の選択範囲を、隣接するポリゴンに1段階広げます。");
+        public static readonly GUIContent ShrinkSelection = new GUIContent("選択を縮小 (Shrink)", "現在の選択範囲の境界を1段階狭めます。");
+        public static readonly GUIContent SaveSelection = new GUIContent("選択を保存", "現在の選択範囲をファイル(.mmp)に保存します。");
+        public static readonly GUIContent LoadSelection = new GUIContent("選択を読み込み", "ファイル(.mmp)から選択範囲を読み込みます。");
+        public static readonly GUIContent PaintMode = new GUIContent("ペイント", "クリック/ドラッグしたポリゴンを選択範囲に追加します。");
+        public static readonly GUIContent EraseMode = new GUIContent("消しゴム", "クリック/ドラッグしたポリゴンを選択範囲から削除します。");
+        public static readonly GUIContent OnlyActiveSubmesh = new GUIContent("アクティブなサブメッシュのみ", "チェックを入れると、ドロップダウンで選択したサブメッシュにのみペイントや選択操作が影響するようになります。");
+        public static readonly GUIContent ShowWireframe = new GUIContent("選択箇所のワイヤーフレーム表示", "シーンビューで、選択中のポリゴンをワイヤーフレームで表示します。");
+        public static readonly GUIContent HoverHighlight = new GUIContent("ホバー箇所をハイライト", "シーンビューで、マウスカーソルが乗っているポリゴンをハイライト表示します。");
+        public static readonly GUIContent IsolateSelection = new GUIContent("選択箇所のみ分離表示 (Isolate)", "シーンビューで、選択中のポリゴンのみを表示します。モデルの裏側などを確認するのに便利です。");
+        public static readonly GUIContent BaseTexture = new GUIContent("ベーステクスチャ (参照用)", "UVプレビューの背景に表示するテクスチャを指定します。モデルのテクスチャを指定すると、どの部分を塗っているか分かりやすくなります。");
+        public static readonly GUIContent ShowBaseTextureInPreview = new GUIContent("プレビューにベーステクスチャを表示", "チェックを入れると、UVプレビューの背景に上記で指定したベーステクスチャが表示されます。");
+        public static readonly GUIContent AddTemporaryCollider = new GUIContent("一時的なMeshColliderを自動追加", "ペイント対象のオブジェクトにColliderがない場合、レイキャストのために一時的なMeshColliderを自動で追加します。通常はオンのままで問題ありません。");
+        public static readonly GUIContent TwoDPaint = new GUIContent("2Dペイント", "UVプレビュー上で直接ペイント操作を有効にします。\nShift+クリックでUVアイランドを選択できます。");
+        public static readonly GUIContent ResetView = new GUIContent("ビューをリセット", "UVプレビューの拡大率と位置をリセットします。");
+        public static readonly GUIContent BlurPreview = new GUIContent("ぼかしプレビュー", "現在のぼかし設定をプレビューに適用します。");
+        public static readonly GUIContent NormalPreview = new GUIContent("通常プレビュー", "ぼかしを解除した通常のプレビューに戻ります。");
+    }
+
+
     /// <summary>
     /// メニューからウィンドウを開きます。
     /// </summary>
@@ -40,7 +74,7 @@ public class MeshMaskPainterWindow : EditorWindow
     public static void ShowWindow()
     {
         var w = GetWindow<MeshMaskPainterWindow>("MMP");
-        w.minSize = new Vector2(800, 600);
+        w.minSize = new Vector2(800, 900);
     }
 
     /// <summary>
@@ -158,7 +192,12 @@ public class MeshMaskPainterWindow : EditorWindow
             {
                 EditorGUILayout.LabelField("UVプレビュー", GUILayout.Width(100));
                 GUILayout.FlexibleSpace();
-                m_Is2DPaintEnabled = GUILayout.Toggle(m_Is2DPaintEnabled, new GUIContent("2Dペイント", "UVプレビュー上でペイントを有効にします"), EditorStyles.toolbarButton, GUILayout.Width(80));
+                if (GUILayout.Button(Tooltips.ResetView, EditorStyles.toolbarButton, GUILayout.Width(100)))
+                {
+                    m_UvPreviewPan = Vector2.zero;
+                    m_UvPreviewZoom = 1.0f;
+                }
+                m_Is2DPaintEnabled = GUILayout.Toggle(m_Is2DPaintEnabled, Tooltips.TwoDPaint, EditorStyles.toolbarButton, GUILayout.Width(80));
             }
 
             using (new EditorGUILayout.VerticalScope("box", GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true)))
@@ -168,7 +207,19 @@ public class MeshMaskPainterWindow : EditorWindow
                 if (currentPreview != null)
                 {
                     Rect aspectRect = MeshMaskPainterCore.GUITool.GetAspectRect(rect, (float)currentPreview.width / currentPreview.height);
-                    EditorGUI.DrawPreviewTexture(aspectRect, currentPreview, null, ScaleMode.ScaleToFit);
+
+                    // --- UVプレビュー操作のハンドリングを追加 ---
+                    HandleUvPreviewControls(aspectRect);
+
+                    // 背景を黒で塗りつぶす
+                    EditorGUI.DrawRect(aspectRect, Color.black);
+
+                    // DrawTextureWithTexCoordsはY座標の始点が左下のため、
+                    // UI操作で使っている左上基準の座標系から変換して描画する
+                    float texCoordHeight = 1f / m_UvPreviewZoom;
+                    float texCoordY = 1f - m_UvPreviewPan.y - texCoordHeight;
+                    Rect texCoords = new Rect(m_UvPreviewPan.x, texCoordY, 1f / m_UvPreviewZoom, texCoordHeight);
+                    GUI.DrawTextureWithTexCoords(aspectRect, currentPreview, texCoords, true);
 
                     if (m_Is2DPaintEnabled)
                     {
@@ -191,11 +242,11 @@ public class MeshMaskPainterWindow : EditorWindow
                 {
                     if (!m_IsPreviewBlurred)
                     {
-                        if (GUILayout.Button("ぼかしプレビュー", EditorStyles.toolbarButton)) { ApplyBlurToPreview(); m_IsPreviewBlurred = true; }
+                        if (GUILayout.Button(Tooltips.BlurPreview, EditorStyles.toolbarButton)) { ApplyBlurToPreview(); m_IsPreviewBlurred = true; }
                     }
                     else
                     {
-                        if (GUILayout.Button("通常プレビュー", EditorStyles.toolbarButton)) { m_IsPreviewBlurred = false; }
+                        if (GUILayout.Button(Tooltips.NormalPreview, EditorStyles.toolbarButton)) { m_IsPreviewBlurred = false; }
                     }
                 }
             }
@@ -241,7 +292,7 @@ public class MeshMaskPainterWindow : EditorWindow
         using (new EditorGUILayout.VerticalScope("box"))
         {
             EditorGUI.BeginChangeCheck();
-            m_TargetGameObject = (GameObject)EditorGUILayout.ObjectField("ターゲットオブジェクト", m_TargetGameObject, typeof(GameObject), true);
+            m_TargetGameObject = (GameObject)EditorGUILayout.ObjectField(Tooltips.TargetObject, m_TargetGameObject, typeof(GameObject), true);
             if (EditorGUI.EndChangeCheck())
             {
                 m_Core.SetTarget(null);
@@ -325,7 +376,7 @@ public class MeshMaskPainterWindow : EditorWindow
 
             using (new EditorGUI.DisabledScope(m_Core.TargetRenderer == null))
             {
-                if (GUILayout.Button("メッシュ情報を再構築"))
+                if (GUILayout.Button(Tooltips.RebuildMeshInfo))
                 {
                     Undo.RecordObject(this, "マップを再構築");
                     m_Core.SetupMeshAndMappings();
@@ -345,21 +396,21 @@ public class MeshMaskPainterWindow : EditorWindow
         {
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("クリア")) { Undo.RecordObject(this, "選択をクリア"); m_Core.ClearSelection(); }
-                using (new EditorGUI.DisabledScope(m_Core.SelectedTriangles.Count == 0)) { if (GUILayout.Button("反転")) { Undo.RecordObject(this, "選択を反転"); m_Core.InvertSelection(); } }
+                if (GUILayout.Button(Tooltips.ClearSelection)) { Undo.RecordObject(this, "選択をクリア"); m_Core.ClearSelection(); }
+                using (new EditorGUI.DisabledScope(m_Core.SelectedTriangles.Count == 0)) { if (GUILayout.Button(Tooltips.InvertSelection)) { Undo.RecordObject(this, "選択を反転"); m_Core.InvertSelection(); } }
             }
             using (new EditorGUI.DisabledScope(m_Core.SelectedTriangles.Count == 0 || !m_Core.IsAdjacencyMapReady()))
             {
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (GUILayout.Button("選択を拡張 (Grow)")) { Undo.RecordObject(this, "選択を拡張"); m_Core.GrowSelection(); }
-                    if (GUILayout.Button("選択を縮小 (Shrink)")) { Undo.RecordObject(this, "選択を縮小"); m_Core.ShrinkSelection(); }
+                    if (GUILayout.Button(Tooltips.GrowSelection)) { Undo.RecordObject(this, "選択を拡張"); m_Core.GrowSelection(); }
+                    if (GUILayout.Button(Tooltips.ShrinkSelection)) { Undo.RecordObject(this, "選択を縮小"); m_Core.ShrinkSelection(); }
                 }
             }
             using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("選択を保存")) { m_Core.SaveSelection(); }
-                if (GUILayout.Button("選択を読み込み")) { Undo.RecordObject(this, "選択を読み込み"); m_Core.LoadSelection(); }
+                if (GUILayout.Button(Tooltips.SaveSelection)) { m_Core.SaveSelection(); }
+                if (GUILayout.Button(Tooltips.LoadSelection)) { Undo.RecordObject(this, "選択を読み込み"); m_Core.LoadSelection(); }
             }
         }
     }
@@ -371,12 +422,12 @@ public class MeshMaskPainterWindow : EditorWindow
     {
         using (new EditorGUILayout.VerticalScope("box"))
         {
-            m_Core.PaintMode = GUILayout.Toolbar(m_Core.PaintMode ? 0 : 1, new[] { "ペイント", "消しゴム" }) == 0;
+            m_Core.PaintMode = GUILayout.Toolbar(m_Core.PaintMode ? 0 : 1, new[] { Tooltips.PaintMode, Tooltips.EraseMode }) == 0;
             EditorGUILayout.Space(4);
 
             using (new EditorGUILayout.HorizontalScope())
             {
-                m_Core.OnlyActiveSubmesh = EditorGUILayout.ToggleLeft("アクティブなサブメッシュのみ", m_Core.OnlyActiveSubmesh, GUILayout.Width(180));
+                m_Core.OnlyActiveSubmesh = EditorGUILayout.ToggleLeft(Tooltips.OnlyActiveSubmesh, m_Core.OnlyActiveSubmesh, GUILayout.Width(180));
                 var (labels, values) = m_Core.GetSubmeshOptions();
                 int currentIndex = Array.IndexOf(values, m_Core.ActiveSubmesh); if (currentIndex < 0) currentIndex = 0;
                 using (new EditorGUI.DisabledScope(!m_Core.OnlyActiveSubmesh || !m_Core.IsReady()))
@@ -388,10 +439,10 @@ public class MeshMaskPainterWindow : EditorWindow
             }
             EditorGUILayout.Space(8);
 
-            m_Core.ShowWireframe = EditorGUILayout.ToggleLeft("選択箇所のワイヤーフレーム表示", m_Core.ShowWireframe);
-            m_Core.HoverHighlight = EditorGUILayout.ToggleLeft("ホバー箇所をハイライト", m_Core.HoverHighlight);
+            m_Core.ShowWireframe = EditorGUILayout.ToggleLeft(Tooltips.ShowWireframe, m_Core.ShowWireframe);
+            m_Core.HoverHighlight = EditorGUILayout.ToggleLeft(Tooltips.HoverHighlight, m_Core.HoverHighlight);
 
-            bool newIsolate = EditorGUILayout.ToggleLeft("選択箇所のみ分離表示 (Isolate)", m_Core.IsolateEnabled);
+            bool newIsolate = EditorGUILayout.ToggleLeft(Tooltips.IsolateSelection, m_Core.IsolateEnabled);
             if (newIsolate != m_Core.IsolateEnabled)
             {
                 SetIsolationMode(newIsolate);
@@ -404,10 +455,14 @@ public class MeshMaskPainterWindow : EditorWindow
 
             using (new EditorGUI.DisabledScope(m_Core.TargetRenderer == null || m_Core.TargetRenderer.sharedMaterial == null))
             {
-                if (m_Core.BaseTexture == null && m_Core.TargetRenderer != null && m_Core.TargetRenderer.sharedMaterial != null) m_Core.BaseTexture = m_Core.TargetRenderer.sharedMaterial.mainTexture as Texture2D;
-                m_Core.BaseTexture = (Texture2D)EditorGUILayout.ObjectField("ベーステクスチャ (参照用)", m_Core.BaseTexture, typeof(Texture2D), false);
+                // This logic is now handled in OnRendererSelected, but kept here for manual override.
+                if (m_Core.BaseTexture == null && m_Core.TargetRenderer != null && m_Core.TargetRenderer.sharedMaterial != null)
+                {
+                    m_Core.BaseTexture = m_Core.TargetRenderer.sharedMaterial.mainTexture as Texture2D;
+                }
+                m_Core.BaseTexture = (Texture2D)EditorGUILayout.ObjectField(Tooltips.BaseTexture, m_Core.BaseTexture, typeof(Texture2D), false);
 
-                bool newShowBaseTexture = EditorGUILayout.ToggleLeft("プレビューにベーステクスチャを表示", m_Core.ShowBaseTextureInPreview);
+                bool newShowBaseTexture = EditorGUILayout.ToggleLeft(Tooltips.ShowBaseTextureInPreview, m_Core.ShowBaseTextureInPreview);
                 if (newShowBaseTexture != m_Core.ShowBaseTextureInPreview) { m_Core.ShowBaseTextureInPreview = newShowBaseTexture; m_Core.UpdatePreviewTexture(m_SharpPreviewTex); }
 
                 if (m_Core.ShowBaseTextureInPreview && m_Core.BaseTexture != null && !m_Core.BaseTexture.isReadable)
@@ -417,7 +472,7 @@ public class MeshMaskPainterWindow : EditorWindow
             }
             EditorGUILayout.Space(5);
 
-            m_Core.AddTemporaryCollider = EditorGUILayout.ToggleLeft("一時的なMeshColliderを自動追加", m_Core.AddTemporaryCollider);
+            m_Core.AddTemporaryCollider = EditorGUILayout.ToggleLeft(Tooltips.AddTemporaryCollider, m_Core.AddTemporaryCollider);
         }
     }
 
@@ -593,6 +648,54 @@ public class MeshMaskPainterWindow : EditorWindow
     }
 
     /// <summary>
+    /// UVプレビューのパン・ズーム操作を処理します。
+    /// </summary>
+    /// <param name="controlRect">プレビューの表示領域</param>
+    private void HandleUvPreviewControls(Rect controlRect)
+    {
+        Event e = Event.current;
+        if (!controlRect.Contains(e.mousePosition)) return;
+
+        // ズーム (マウスホイール)
+        if (e.type == EventType.ScrollWheel)
+        {
+            float zoomDelta = -e.delta.y * 0.05f;
+            float oldZoom = m_UvPreviewZoom;
+            m_UvPreviewZoom = Mathf.Clamp(m_UvPreviewZoom + zoomDelta * m_UvPreviewZoom, MIN_ZOOM, MAX_ZOOM);
+
+            // マウスカーソル位置中心のズーム
+            Vector2 mousePosInRect = e.mousePosition - controlRect.position;
+            Vector2 uvBeforeZoom = new Vector2(
+                m_UvPreviewPan.x + (mousePosInRect.x / controlRect.width) / oldZoom,
+                m_UvPreviewPan.y + (mousePosInRect.y / controlRect.height) / oldZoom
+            );
+            m_UvPreviewPan = new Vector2(
+                uvBeforeZoom.x - (mousePosInRect.x / controlRect.width) / m_UvPreviewZoom,
+                uvBeforeZoom.y - (mousePosInRect.y / controlRect.height) / m_UvPreviewZoom
+            );
+
+            e.Use();
+        }
+
+        // パン (中マウスボタン or Alt + 左マウスボタン)
+        if (e.type == EventType.MouseDrag && (e.button == 2 || (e.alt && e.button == 0)))
+        {
+            Vector2 panDelta = e.delta;
+            panDelta.x /= controlRect.width * m_UvPreviewZoom;
+            panDelta.y /= controlRect.height * m_UvPreviewZoom;
+            m_UvPreviewPan -= panDelta;
+            e.Use();
+        }
+
+        // パンとズームの値を範囲内にクランプ
+        float maxPan = 1f - (1f / m_UvPreviewZoom);
+        m_UvPreviewPan.x = Mathf.Clamp(m_UvPreviewPan.x, 0, maxPan);
+        m_UvPreviewPan.y = Mathf.Clamp(m_UvPreviewPan.y, 0, maxPan);
+        if (m_UvPreviewZoom <= 1.0f) m_UvPreviewPan = Vector2.zero;
+    }
+
+
+    /// <summary>
     /// 2Dプレビュー上でのペイント入力を処理します。
     /// </summary>
     /// <param name="aspectRect">プレビューテクスチャの表示範囲。</param>
@@ -605,10 +708,17 @@ public class MeshMaskPainterWindow : EditorWindow
             return;
         }
 
+        // UV座標の計算をパン・ズームに対応させる
+        Vector2 localPos = e.mousePosition - aspectRect.position;
+        Vector2 uvInView = new Vector2(localPos.x / aspectRect.width, localPos.y / aspectRect.height);
+        Vector2 uv = new Vector2(
+            m_UvPreviewPan.x + uvInView.x / m_UvPreviewZoom,
+            (1.0f - m_UvPreviewPan.y) - uvInView.y / m_UvPreviewZoom
+        );
+
+
         if (e.type == EventType.MouseDown && e.shift && e.button == 0 && !e.alt)
         {
-            Vector2 localPos = e.mousePosition - aspectRect.position;
-            Vector2 uv = new Vector2(localPos.x / aspectRect.width, 1.0f - (localPos.y / aspectRect.height));
             int triIdx = m_Core.FindTriangleFromUV(uv);
             if (triIdx >= 0)
             {
@@ -620,9 +730,6 @@ public class MeshMaskPainterWindow : EditorWindow
         }
         else if ((e.type == EventType.MouseDown || e.type == EventType.MouseDrag) && e.button == 0 && !e.alt)
         {
-            Vector2 localPos = e.mousePosition - aspectRect.position;
-            Vector2 uv = new Vector2(localPos.x / aspectRect.width, 1.0f - (localPos.y / aspectRect.height));
-
             int triIdx = m_Core.FindTriangleFromUV(uv);
             if (triIdx >= 0 && triIdx != m_LastProcessedTriangle2D)
             {
@@ -737,6 +844,18 @@ public class MeshMaskPainterWindow : EditorWindow
         Undo.RecordObject(this, "ターゲット変更");
         SetIsolationMode(false);
         m_Core.SetTarget(selectedRenderer);
+
+        // --- 不具合修正: ターゲット変更時にベーステクスチャを更新 ---
+        if (m_Core.TargetRenderer != null && m_Core.TargetRenderer.sharedMaterial != null)
+        {
+            m_Core.BaseTexture = m_Core.TargetRenderer.sharedMaterial.mainTexture as Texture2D;
+        }
+        else
+        {
+            m_Core.BaseTexture = null;
+        }
+        // --- 修正ここまで ---
+
         CreatePreviewTexture();
         m_Core.UpdatePreviewTexture(m_SharpPreviewTex);
         m_IsolateMeshDirty = true;
