@@ -1,6 +1,7 @@
 // MeshMaskPainterWindow.cs
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -24,11 +25,18 @@ public class MeshMaskPainterWindow : EditorWindow
     private bool m_Is2DPaintEnabled = false;
 
     private Vector2 m_ScrollPos;
+    private Vector2 m_RendererListScrollPos;
+
+    private GameObject m_TargetGameObject;
+    private List<Renderer> m_FoundRenderers = new List<Renderer>();
+    private readonly Dictionary<Renderer, Texture2D> m_PreviewTextures = new Dictionary<Renderer, Texture2D>();
+    private bool m_ShowRendererSelection = false;
+    private const int RENDERER_PREVIEW_SIZE = 64;
 
     /// <summary>
     /// メニューからウィンドウを開きます。
     /// </summary>
-    [MenuItem("Tools/MMP")]
+    [MenuItem("Tools/Mesh Mask Painter")]
     public static void ShowWindow()
     {
         var w = GetWindow<MeshMaskPainterWindow>("MMP");
@@ -59,7 +67,9 @@ public class MeshMaskPainterWindow : EditorWindow
         if (m_SharpPreviewTex != null) DestroyImmediate(m_SharpPreviewTex);
         if (m_BlurredPreviewTex != null) DestroyImmediate(m_BlurredPreviewTex);
         if (m_IsolatedMesh != null) DestroyImmediate(m_IsolatedMesh);
-        SetIsolationMode(false); // 念の為、ウィンドウを閉じる際に元の状態に戻す
+
+        ClearPreviewTextures();
+        SetIsolationMode(false);
     }
 
     /// <summary>
@@ -77,7 +87,7 @@ public class MeshMaskPainterWindow : EditorWindow
     /// </summary>
     private void OnHierarchyChanged()
     {
-        if (m_Core.Smr == null)
+        if (m_Core.TargetRenderer == null)
         {
             m_Core.SetTarget(null);
             Repaint();
@@ -120,8 +130,8 @@ public class MeshMaskPainterWindow : EditorWindow
             if (m_IsolatedMesh != null)
             {
                 GL.PushMatrix();
-                GL.MultMatrix(m_Core.Smr.transform.localToWorldMatrix);
-                m_Core.Smr.sharedMaterial.SetPass(0);
+                GL.MultMatrix(m_Core.TargetRenderer.transform.localToWorldMatrix);
+                m_Core.TargetRenderer.sharedMaterial.SetPass(0);
                 Graphics.DrawMeshNow(m_IsolatedMesh, Vector3.zero, Quaternion.identity);
                 GL.PopMatrix();
             }
@@ -230,18 +240,90 @@ public class MeshMaskPainterWindow : EditorWindow
     {
         using (new EditorGUILayout.VerticalScope("box"))
         {
-            var newSmr = (SkinnedMeshRenderer)EditorGUILayout.ObjectField("スキンメッシュレンダラー", m_Core.Smr, typeof(SkinnedMeshRenderer), true);
-            if (newSmr != m_Core.Smr)
+            EditorGUI.BeginChangeCheck();
+            m_TargetGameObject = (GameObject)EditorGUILayout.ObjectField("ターゲットオブジェクト", m_TargetGameObject, typeof(GameObject), true);
+            if (EditorGUI.EndChangeCheck())
             {
-                Undo.RecordObject(this, "ターゲット変更");
-                SetIsolationMode(false);
-                m_Core.SetTarget(newSmr);
-                CreatePreviewTexture();
-                m_Core.UpdatePreviewTexture(m_SharpPreviewTex);
-                m_IsolateMeshDirty = true;
+                m_Core.SetTarget(null);
+                ClearPreviewTextures();
+                m_FoundRenderers.Clear();
+
+                if (m_TargetGameObject != null)
+                {
+                    var renderers = m_TargetGameObject.GetComponentsInChildren<Renderer>(true);
+                    foreach (var r in renderers)
+                    {
+                        if (r is SkinnedMeshRenderer smr && smr.sharedMesh != null)
+                        {
+                            m_FoundRenderers.Add(r);
+                        }
+                        else if (r is MeshRenderer mr && mr.GetComponent<MeshFilter>()?.sharedMesh != null)
+                        {
+                            m_FoundRenderers.Add(r);
+                        }
+                    }
+                    m_ShowRendererSelection = m_FoundRenderers.Count > 0;
+                }
+                else
+                {
+                    m_ShowRendererSelection = false;
+                }
             }
 
-            using (new EditorGUI.DisabledScope(m_Core.Smr == null))
+            if (m_Core.TargetRenderer != null)
+            {
+                EditorGUILayout.LabelField("現在のターゲット:", m_Core.TargetRenderer.gameObject.name);
+            }
+            else if (m_TargetGameObject != null)
+            {
+                EditorGUILayout.HelpBox("オブジェクトから使用するレンダラーを選択してください。", MessageType.Info);
+            }
+
+            if (m_TargetGameObject != null)
+            {
+                m_ShowRendererSelection = EditorGUILayout.Foldout(m_ShowRendererSelection, $"見つかったレンダラー ({m_FoundRenderers.Count})", true);
+                if (m_ShowRendererSelection)
+                {
+                    using (var scrollView = new EditorGUILayout.ScrollViewScope(m_RendererListScrollPos, GUILayout.Height(Mathf.Min(m_FoundRenderers.Count * 72, 220))))
+                    {
+                        m_RendererListScrollPos = scrollView.scrollPosition;
+                        foreach (var renderer in m_FoundRenderers)
+                        {
+                            if (renderer == null) continue;
+                            using (new EditorGUILayout.HorizontalScope("box"))
+                            {
+                                if (!m_PreviewTextures.ContainsKey(renderer) || m_PreviewTextures[renderer] == null)
+                                {
+                                    m_PreviewTextures[renderer] = GenerateRendererPreview(renderer);
+                                }
+                                var previewTex = m_PreviewTextures[renderer];
+
+                                Rect previewRect = GUILayoutUtility.GetRect(64, 64);
+                                if (previewTex != null)
+                                {
+                                    GUI.DrawTexture(previewRect, previewTex, ScaleMode.ScaleToFit);
+                                }
+                                else
+                                {
+                                    GUI.Label(previewRect, "No Preview");
+                                }
+
+                                using (new EditorGUILayout.VerticalScope())
+                                {
+                                    EditorGUILayout.LabelField(renderer.gameObject.name, EditorStyles.boldLabel);
+                                    EditorGUILayout.LabelField(renderer.GetType().Name);
+                                    if (GUILayout.Button("このレンダラーを選択"))
+                                    {
+                                        OnRendererSelected(renderer);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            using (new EditorGUI.DisabledScope(m_Core.TargetRenderer == null))
             {
                 if (GUILayout.Button("メッシュ情報を再構築"))
                 {
@@ -289,11 +371,9 @@ public class MeshMaskPainterWindow : EditorWindow
     {
         using (new EditorGUILayout.VerticalScope("box"))
         {
-            // Paint Mode
             m_Core.PaintMode = GUILayout.Toolbar(m_Core.PaintMode ? 0 : 1, new[] { "ペイント", "消しゴム" }) == 0;
             EditorGUILayout.Space(4);
 
-            // Submesh Filter
             using (new EditorGUILayout.HorizontalScope())
             {
                 m_Core.OnlyActiveSubmesh = EditorGUILayout.ToggleLeft("アクティブなサブメッシュのみ", m_Core.OnlyActiveSubmesh, GUILayout.Width(180));
@@ -308,7 +388,6 @@ public class MeshMaskPainterWindow : EditorWindow
             }
             EditorGUILayout.Space(8);
 
-            // Display Settings
             m_Core.ShowWireframe = EditorGUILayout.ToggleLeft("選択箇所のワイヤーフレーム表示", m_Core.ShowWireframe);
             m_Core.HoverHighlight = EditorGUILayout.ToggleLeft("ホバー箇所をハイライト", m_Core.HoverHighlight);
 
@@ -323,10 +402,9 @@ public class MeshMaskPainterWindow : EditorWindow
             m_Core.EdgeHighlightColor = EditorGUILayout.ColorField("ハイライトの色", m_Core.EdgeHighlightColor);
             EditorGUILayout.Space(5);
 
-            // Base Texture Preview
-            using (new EditorGUI.DisabledScope(m_Core.Smr == null || m_Core.Smr.sharedMaterial == null))
+            using (new EditorGUI.DisabledScope(m_Core.TargetRenderer == null || m_Core.TargetRenderer.sharedMaterial == null))
             {
-                if (m_Core.BaseTexture == null && m_Core.Smr != null && m_Core.Smr.sharedMaterial != null) m_Core.BaseTexture = m_Core.Smr.sharedMaterial.mainTexture as Texture2D;
+                if (m_Core.BaseTexture == null && m_Core.TargetRenderer != null && m_Core.TargetRenderer.sharedMaterial != null) m_Core.BaseTexture = m_Core.TargetRenderer.sharedMaterial.mainTexture as Texture2D;
                 m_Core.BaseTexture = (Texture2D)EditorGUILayout.ObjectField("ベーステクスチャ (参照用)", m_Core.BaseTexture, typeof(Texture2D), false);
 
                 bool newShowBaseTexture = EditorGUILayout.ToggleLeft("プレビューにベーステクスチャを表示", m_Core.ShowBaseTextureInPreview);
@@ -367,13 +445,13 @@ public class MeshMaskPainterWindow : EditorWindow
     /// </summary>
     private void DrawExportMaskTextureUI()
     {
-        EditorGUILayout.HelpBox("新規マスクテクスチャとして出力します。", MessageType.Info);
+        EditorGUILayout.LabelField("新規マスクテクスチャとして出力します。", EditorStyles.wordWrappedLabel);
         EditorGUILayout.Space(5);
         m_Core.ExportUseBaseTextureSize = EditorGUILayout.ToggleLeft("ベーステクスチャと同解像度で出力", m_Core.ExportUseBaseTextureSize);
         using (new EditorGUI.DisabledScope(m_Core.ExportUseBaseTextureSize))
         {
-            m_Core.ExportWidth = EditorGUILayout.IntPopup("出力解像度 (幅)", m_Core.ExportWidth, new[] { "128", "256", "512", "1024", "2048", "4096" }, new[] { 128, 256, 512, 1024, 2048, 4096 });
-            m_Core.ExportHeight = EditorGUILayout.IntPopup("出力解像度 (高さ)", m_Core.ExportHeight, new[] { "128", "256", "512", "1024", "2048", "4096" }, new[] { 128, 256, 512, 1024, 2048, 4096 });
+            m_Core.ExportWidth = EditorGUILayout.IntPopup("出力解像度 (幅)", m_Core.ExportWidth, new[] { "1024", "2048", "4096" }, new[] { 1024, 2048, 4096 });
+            m_Core.ExportHeight = EditorGUILayout.IntPopup("出力解像度 (高さ)", m_Core.ExportHeight, new[] { "1024", "2048", "4096" }, new[] { 1024, 2048, 4096 });
         }
         m_Core.ExportAlphaZeroBackground = EditorGUILayout.ToggleLeft("背景を透過 (アルファ=0)", m_Core.ExportAlphaZeroBackground);
 
@@ -406,7 +484,7 @@ public class MeshMaskPainterWindow : EditorWindow
         EditorGUILayout.HelpBox("選択範囲を頂点カラーに書き込み、新しいメッシュアセットを作成します。", MessageType.Info);
         m_Core.TargetVertexColorChannel = (TargetChannel)EditorGUILayout.EnumFlagsField("書き込み先チャンネル", m_Core.TargetVertexColorChannel);
         EditorGUILayout.Space(5);
-        using (new EditorGUI.DisabledScope(!m_Core.IsReady() || m_Core.Smr.sharedMesh == null))
+        using (new EditorGUI.DisabledScope(!m_Core.IsReady() || m_Core.TargetRenderer.GetComponent<MeshFilter>() == null && m_Core.TargetRenderer.GetComponent<SkinnedMeshRenderer>() == null))
         {
             if (GUILayout.Button("頂点カラーへベイク"))
             {
@@ -464,7 +542,7 @@ public class MeshMaskPainterWindow : EditorWindow
     private void UpdateHoverTriangle(Event e)
     {
         Ray ray = HandleUtility.GUIPointToWorldRay(e.mousePosition);
-        if (Physics.Raycast(ray, out RaycastHit hit, Mathf.Infinity) && hit.collider?.gameObject == m_Core.Smr.gameObject)
+        if (Physics.Raycast(ray, out RaycastHit hit, Mathf.Infinity) && hit.collider?.gameObject == m_Core.TargetRenderer.gameObject)
         {
             m_HoverTriangle = hit.triangleIndex;
             if (!m_Core.IsTriangleInActiveScope(m_HoverTriangle))
@@ -601,7 +679,7 @@ public class MeshMaskPainterWindow : EditorWindow
     {
         if (!m_Core.IsReady()) return;
 
-        using (new Handles.DrawingScope(m_Core.Smr.transform.localToWorldMatrix))
+        using (new Handles.DrawingScope(m_Core.TargetRenderer.transform.localToWorldMatrix))
         {
             Handles.zTest = UnityEngine.Rendering.CompareFunction.Always;
             var verts = m_Core.Mesh.vertices;
@@ -642,11 +720,129 @@ public class MeshMaskPainterWindow : EditorWindow
     private void SetIsolationMode(bool enabled)
     {
         m_Core.IsolateEnabled = enabled;
-        if (m_Core.Smr != null)
+        if (m_Core.TargetRenderer != null)
         {
-            m_Core.Smr.enabled = !enabled;
+            m_Core.TargetRenderer.enabled = !enabled;
         }
         m_IsolateMeshDirty = true;
         SceneView.RepaintAll();
+    }
+
+    /// <summary>
+    /// レンダラーが選択された際のコールバック処理です。
+    /// </summary>
+    /// <param name="selectedRenderer">選択されたレンダラー。</param>
+    private void OnRendererSelected(Renderer selectedRenderer)
+    {
+        Undo.RecordObject(this, "ターゲット変更");
+        SetIsolationMode(false);
+        m_Core.SetTarget(selectedRenderer);
+        CreatePreviewTexture();
+        m_Core.UpdatePreviewTexture(m_SharpPreviewTex);
+        m_IsolateMeshDirty = true;
+        m_ShowRendererSelection = false;
+    }
+
+    /// <summary>
+    /// プレビュー用のテクスチャを生成します。
+    /// </summary>
+    private Texture2D GenerateRendererPreview(Renderer renderer)
+    {
+        if (renderer == null) return null;
+
+        Mesh mesh = null;
+        if (renderer is SkinnedMeshRenderer smr)
+        {
+            mesh = new Mesh();
+            smr.BakeMesh(mesh);
+        }
+        else if (renderer is MeshRenderer mr)
+        {
+            var mf = mr.GetComponent<MeshFilter>();
+            if (mf != null) mesh = mf.sharedMesh;
+        }
+
+        if (mesh == null) return null;
+
+        GameObject previewObject = null;
+        RenderTexture renderTexture = null;
+        Texture2D thumbnail = null;
+        GameObject cameraGO = null;
+        GameObject lightGO = null;
+
+        try
+        {
+            int previewLayer = 31;
+            renderTexture = RenderTexture.GetTemporary(RENDERER_PREVIEW_SIZE * 2, RENDERER_PREVIEW_SIZE * 2, 24, RenderTextureFormat.ARGB32);
+            renderTexture.antiAliasing = 4;
+
+            cameraGO = new GameObject("PreviewCamera") { hideFlags = HideFlags.HideAndDontSave };
+            var previewCamera = cameraGO.AddComponent<Camera>();
+            previewCamera.targetTexture = renderTexture;
+            previewCamera.clearFlags = CameraClearFlags.SolidColor;
+            previewCamera.backgroundColor = new Color(0.2f, 0.2f, 0.2f, 0f);
+            previewCamera.fieldOfView = 30f;
+            previewCamera.cullingMask = 1 << previewLayer;
+
+            previewObject = new GameObject("PreviewMesh") { hideFlags = HideFlags.HideAndDontSave };
+            previewObject.layer = previewLayer;
+
+            var meshFilter = previewObject.AddComponent<MeshFilter>();
+            var meshRenderer = previewObject.AddComponent<MeshRenderer>();
+            meshFilter.sharedMesh = mesh;
+            meshRenderer.sharedMaterials = renderer.sharedMaterials;
+
+            Bounds bounds = mesh.bounds;
+            float distance = (bounds.extents.magnitude * 1.5f) / Mathf.Tan(previewCamera.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            distance *= 1.5f; // Add padding
+
+            Vector3 cameraDirection = new Vector3(1f, 0.7f, 1f).normalized;
+
+            cameraGO.transform.position = bounds.center + cameraDirection * distance;
+            cameraGO.transform.LookAt(bounds.center);
+
+            lightGO = new GameObject("PreviewLight") { hideFlags = HideFlags.HideAndDontSave };
+            lightGO.transform.rotation = cameraGO.transform.rotation;
+            var light = lightGO.AddComponent<Light>();
+            light.type = LightType.Directional;
+            light.intensity = 1.0f;
+            light.color = Color.white;
+
+            previewCamera.Render();
+
+            RenderTexture previous = RenderTexture.active;
+            RenderTexture.active = renderTexture;
+
+            thumbnail = new Texture2D(RENDERER_PREVIEW_SIZE, RENDERER_PREVIEW_SIZE, TextureFormat.RGBA32, false);
+            thumbnail.ReadPixels(new Rect((RENDERER_PREVIEW_SIZE * 2 - RENDERER_PREVIEW_SIZE) / 2, (RENDERER_PREVIEW_SIZE * 2 - RENDERER_PREVIEW_SIZE) / 2, RENDERER_PREVIEW_SIZE, RENDERER_PREVIEW_SIZE), 0, 0);
+            thumbnail.Apply();
+
+            RenderTexture.active = previous;
+        }
+        finally
+        {
+            if (cameraGO != null) DestroyImmediate(cameraGO);
+            if (lightGO != null) DestroyImmediate(lightGO);
+            if (previewObject != null) DestroyImmediate(previewObject);
+            if (renderTexture != null) RenderTexture.ReleaseTemporary(renderTexture);
+            if (renderer is SkinnedMeshRenderer) DestroyImmediate(mesh);
+        }
+
+        return thumbnail;
+    }
+
+    /// <summary>
+    /// プレビュー用のテクスチャキャッシュをクリアします。
+    /// </summary>
+    private void ClearPreviewTextures()
+    {
+        foreach (var tex in m_PreviewTextures.Values)
+        {
+            if (tex != null)
+            {
+                DestroyImmediate(tex);
+            }
+        }
+        m_PreviewTextures.Clear();
     }
 }

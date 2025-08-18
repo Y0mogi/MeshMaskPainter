@@ -19,7 +19,7 @@ public enum TargetChannel
 [Serializable]
 public class MeshMaskPainterCore
 {
-    public SkinnedMeshRenderer Smr { get; private set; }
+    public Renderer TargetRenderer { get; private set; }
     public Texture2D BaseTexture;
 
     public bool PaintMode = true;
@@ -68,7 +68,7 @@ public class MeshMaskPainterCore
     /// <summary>
     /// ツールが使用可能な状態か（ターゲットが設定されているか）どうかを取得します。
     /// </summary>
-    public bool IsReady() => Smr != null && Mesh != null;
+    public bool IsReady() => TargetRenderer != null && Mesh != null;
 
     /// <summary>
     /// 隣接マップが構築済みかどうかを取得します。
@@ -91,13 +91,13 @@ public class MeshMaskPainterCore
     }
 
     /// <summary>
-    /// 新しいターゲットのSkinnedMeshRendererを設定します。
+    /// 新しいターゲットのRendererを設定します。
     /// </summary>
-    /// <param name="newSmr">新しいターゲット。</param>
-    public void SetTarget(SkinnedMeshRenderer newSmr)
+    /// <param name="newRenderer">新しいターゲット。</param>
+    public void SetTarget(Renderer newRenderer)
     {
         RemoveBakedMeshIfAny();
-        Smr = newSmr;
+        TargetRenderer = newRenderer;
         SetupMeshAndMappings();
     }
 
@@ -107,49 +107,63 @@ public class MeshMaskPainterCore
     public void SetupMeshAndMappings()
     {
         RemoveBakedMeshIfAny();
+        Mesh = null;
+        m_UvTriangleGrid = null;
 
-        if (Smr == null)
+        if (TargetRenderer == null)
         {
-            Mesh = null;
             SelectedTriangles.Clear();
             m_TriangleToSubmesh = null;
             m_AdjacencyMap = null;
             m_UvAdjacencyMap = null;
-            m_UvTriangleGrid = null;
             return;
         }
 
-        if (Smr.sharedMesh == null)
+        Mesh sourceMesh = null;
+        if (TargetRenderer is SkinnedMeshRenderer smr)
         {
-            Mesh = null;
+            sourceMesh = smr.sharedMesh;
+            if (sourceMesh != null)
+            {
+                try
+                {
+                    var tmp = new Mesh();
+                    smr.BakeMesh(tmp);
+                    if (tmp != null && tmp.vertexCount > 0)
+                    {
+                        m_BakedMesh = tmp;
+                        Mesh = m_BakedMesh;
+                    }
+                    else
+                    {
+                        if (tmp != null) UnityEngine.Object.DestroyImmediate(tmp);
+                        Mesh = sourceMesh;
+                    }
+                }
+                catch (Exception)
+                {
+                    RemoveBakedMeshIfAny();
+                    Mesh = sourceMesh;
+                }
+            }
+        }
+        else if (TargetRenderer is MeshRenderer mr)
+        {
+            var mf = mr.GetComponent<MeshFilter>();
+            if (mf != null)
+            {
+                sourceMesh = mf.sharedMesh;
+                Mesh = sourceMesh;
+            }
+        }
+
+        if (Mesh == null)
+        {
             SelectedTriangles.Clear();
             m_TriangleToSubmesh = null;
             m_AdjacencyMap = null;
             m_UvAdjacencyMap = null;
-            m_UvTriangleGrid = null;
             return;
-        }
-
-        try
-        {
-            var tmp = new Mesh();
-            Smr.BakeMesh(tmp);
-
-            if (tmp != null && tmp.vertexCount > 0)
-            {
-                m_BakedMesh = tmp;
-                Mesh = m_BakedMesh;
-            }
-            else
-            {
-                if (tmp != null) UnityEngine.Object.DestroyImmediate(tmp);
-                Mesh = Smr.sharedMesh;
-            }
-        }
-        catch (Exception)
-        {
-            RemoveBakedMeshIfAny();
-            Mesh = Smr.sharedMesh;
         }
 
         SelectedTriangles.Clear();
@@ -352,8 +366,8 @@ public class MeshMaskPainterCore
     /// </summary>
     public void SaveSelection()
     {
-        if (Smr == null) return;
-        string path = EditorUtility.SaveFilePanel("選択範囲を保存", "Assets", $"{Smr.name}_selection.mmp", "mmp");
+        if (TargetRenderer == null) return;
+        string path = EditorUtility.SaveFilePanel("選択範囲を保存", "Assets", $"{TargetRenderer.name}_selection.mmp", "mmp");
         if (string.IsNullOrEmpty(path)) return;
         File.WriteAllText(path, string.Join(",", SelectedTriangles));
         Debug.Log($"[メッシュマスクペインター] 選択範囲を保存しました: {path}");
@@ -477,7 +491,7 @@ public class MeshMaskPainterCore
             }
             tex.Apply(false);
 
-            string safeName = Smr != null ? Smr.name : "Mesh";
+            string safeName = TargetRenderer != null ? TargetRenderer.name : "Mesh";
             string subLabel = target < 0 ? "All" : $"S{target}";
             string defaultFileName = $"{safeName}_Mask_{subLabel}{(EnableBlur ? "_Blurred" : "")}.png";
             string initialDir = Path.GetFullPath(ExportFolder);
@@ -538,7 +552,17 @@ public class MeshMaskPainterCore
             return;
         }
 
-        string originalPath = AssetDatabase.GetAssetPath(Smr.sharedMesh);
+        Mesh sourceMesh = null;
+        if (TargetRenderer is SkinnedMeshRenderer smr) sourceMesh = smr.sharedMesh;
+        else if (TargetRenderer is MeshRenderer mr) sourceMesh = mr.GetComponent<MeshFilter>()?.sharedMesh;
+
+        if (sourceMesh == null)
+        {
+            EditorUtility.DisplayDialog("エラー", "ベイク元のメッシュが見つかりません。", "OK");
+            return;
+        }
+
+        string originalPath = AssetDatabase.GetAssetPath(sourceMesh);
         string newPath = EditorUtility.SaveFilePanelInProject(
             "新しいメッシュアセットを保存",
             $"{Path.GetFileNameWithoutExtension(originalPath)}_VColor.asset",
@@ -583,7 +607,9 @@ public class MeshMaskPainterCore
         AssetDatabase.CreateAsset(newMesh, newPath);
         AssetDatabase.SaveAssets();
 
-        Smr.sharedMesh = newMesh;
+        if (TargetRenderer is SkinnedMeshRenderer smr2) smr2.sharedMesh = newMesh;
+        else if (TargetRenderer is MeshRenderer mr2) mr2.GetComponent<MeshFilter>().sharedMesh = newMesh;
+
         SetupMeshAndMappings();
         EditorUtility.DisplayDialog("成功", $"頂点カラーをベイクし、新しいメッシュアセットを保存しました:\n{newPath}", "OK");
     }
@@ -765,11 +791,11 @@ public class MeshMaskPainterCore
     /// </summary>
     private void EnsureTemporaryCollider()
     {
-        if (!AddTemporaryCollider || Smr == null) return;
-        var col = Smr.GetComponent<Collider>();
+        if (!AddTemporaryCollider || TargetRenderer == null) return;
+        var col = TargetRenderer.GetComponent<Collider>();
         if (col == null)
         {
-            m_TempCollider = Smr.gameObject.AddComponent<MeshCollider>();
+            m_TempCollider = TargetRenderer.gameObject.AddComponent<MeshCollider>();
             m_TempCollider.sharedMesh = Mesh;
             m_TempCollider.convex = false;
         }
